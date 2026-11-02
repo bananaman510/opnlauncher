@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use md5::{Digest, Md5};
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
@@ -222,8 +223,7 @@ impl Database {
         let name = validate_offline_name(name)?;
         let profile = OfflineProfile {
             id: Uuid::new_v4().to_string(),
-            uuid: Uuid::new_v3(&Uuid::NAMESPACE_OID, format!("OfflinePlayer:{name}").as_bytes())
-                .to_string(),
+            uuid: offline_profile_uuid(&name),
             name,
             verified: false,
             created_at: unix_time(),
@@ -281,6 +281,16 @@ impl Database {
     }
 }
 
+fn offline_profile_uuid(name: &str) -> String {
+    let identity = format!("OfflinePlayer:{name}");
+    let mut digest = Md5::digest(identity.as_bytes());
+    digest[6] = (digest[6] & 0x0f) | 0x30;
+    digest[8] = (digest[8] & 0x3f) | 0x80;
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest);
+    Uuid::from_bytes(bytes).to_string()
+}
+
 pub fn validate_instance_name(input: &str) -> Result<String> {
     let name = input.trim();
     if name.is_empty() || name.chars().count() > 48 || name.chars().any(char::is_control) {
@@ -335,6 +345,7 @@ mod tests {
         let profile = first.create_offline_profile("Test_Player").unwrap();
         let second = Database::in_memory().unwrap();
         let same_name = second.create_offline_profile("Test_Player").unwrap();
+        assert_eq!(profile.uuid, "a33ac9aa-13a8-3009-a068-bb1380a2d0b0");
         assert_eq!(profile.uuid, same_name.uuid);
         assert!(!profile.verified);
     }

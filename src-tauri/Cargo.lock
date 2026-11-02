@@ -2169,9 +2169,10 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "opnlauncher"
-version = "0.1.0"
+version = "0.1.0-dev.1"
 dependencies = [
  "directories",
+ "md-5",
  "regex",
  "rusqlite",
  "serde",
@@ -3750,7 +3751,6 @@ checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
- "md-5",
  "serde_core",
  "wasm-bindgen",
 ]

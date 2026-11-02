@@ -2,7 +2,7 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
-## [0.1.0] - Unreleased
+## [0.1.0-dev.1] - Unreleased
 
 ### Added
 
@@ -15,3 +15,5 @@ All notable project changes are recorded here. This project follows Semantic Ver
 - Initial local launch argument resolution for installed Minecraft metadata, including version inheritance, library classpaths, native extraction safeguards, and process logs.
 - Basic Rust and frontend unit tests.
 - Linux development, privacy, security, and architecture documentation.
+- Corrected development profile UUIDs to match Java's name-based UUID behavior for new profiles.
+- Added a feature audit and an incremental implementation roadmap.

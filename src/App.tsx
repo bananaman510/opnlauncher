@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import packageJson from "../package.json";
 import {
   ArrowDownToLine,
   Boxes,
@@ -49,6 +50,7 @@ const navigation = [
 ] as const;
 
 const isDevelopmentProfileBuild = import.meta.env.DEV;
+const appVersion = packageJson.version;
 
 function App() {
   const desktop = isTauri();
@@ -349,7 +351,7 @@ function App() {
             <div className="privacy-icon"><ShieldCheck size={16} /></div>
             <div><strong>Private by default</strong><span>Game files stay on this device.</span></div>
           </div>
-          <div className="sidebar-version"><span className="status-pip" /> Version 0.1.0 <span>DEV</span></div>
+          <div className="sidebar-version"><span className="status-pip" /> Version {appVersion} <span>DEV</span></div>
         </div>
       </aside>
 
@@ -505,10 +507,10 @@ function App() {
           ) : activePage === "settings" ? (
             <SettingsPage runtimes={runtimes} installations={installations} refreshInstallations={() => void refreshInstallations()} />
           ) : (
-            <section className="placeholder-page"><div className="placeholder-icon"><activeNavigation.icon size={22} /></div><p className="eyebrow">COMING IN A LATER PHASE</p><h1>{activeNavigation.label}</h1><p>This section will be added incrementally. OpnLauncher v0.1.0 focuses on local instances, Java discovery, and launching existing game files.</p><button className="secondary-button" type="button" onClick={() => setActivePage("home")}>Back to Home</button></section>
+            <section className="placeholder-page"><div className="placeholder-icon"><activeNavigation.icon size={22} /></div><p className="eyebrow">COMING IN A LATER PHASE</p><h1>{activeNavigation.label}</h1><p>This section will be added incrementally. OpnLauncher v{appVersion} focuses on local instances, Java discovery, and launching existing game files.</p><button className="secondary-button" type="button" onClick={() => setActivePage("home")}>Back to Home</button></section>
           )}
 
-          <footer className="page-footer"><span>OpnLauncher is an independent community project and is not affiliated with Mojang or Microsoft.</span><span>0.1.0 · LOCAL DEVELOPMENT BUILD</span></footer>
+          <footer className="page-footer"><span>OpnLauncher is an independent community project and is not affiliated with Mojang or Microsoft.</span><span>{appVersion} · LOCAL DEVELOPMENT BUILD</span></footer>
         </div>
       </main>
 

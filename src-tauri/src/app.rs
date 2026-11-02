@@ -9,7 +9,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::database::Database;
-use crate::error::{LauncherError, Result};
 use crate::java;
 use crate::launch::{build_launch_plan, LaunchRequest};
 use crate::minecraft;
@@ -282,7 +281,7 @@ fn stream_output<R: Read + Send + 'static>(
                 }
             }
         }
-    });
+    })
 }
 
 fn append_log(file: &Arc<Mutex<File>>, text: &str) -> std::io::Result<()> {

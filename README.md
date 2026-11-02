@@ -2,7 +2,7 @@
 
 OpnLauncher is an independent, local-first launcher for Minecraft Java Edition. It is built with Tauri 2, Rust, React, TypeScript, and SQLite.
 
-This repository is the initial **0.1.0 development prototype**. It focuses on Java discovery, detecting and registering existing Minecraft installations, local instance metadata, and a first launch path for already installed game files. It does not install Minecraft, authenticate Microsoft accounts, install mods, or download game assets yet.
+This repository is an early **development prototype**. It focuses on Java discovery, detecting and registering existing Minecraft installations, local instance metadata, and a first launch path for already installed game files. It does not install Minecraft, authenticate Microsoft accounts, install mods, or download game assets yet.
 
 OpnLauncher is not affiliated with, endorsed by, or associated with Mojang Studios or Microsoft. Minecraft is a trademark of Mojang Synergies AB. Minecraft game files are not included or redistributed by this project. Use the official Minecraft launcher or another legitimate source to obtain game files.
 
