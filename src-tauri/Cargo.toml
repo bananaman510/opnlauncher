@@ -1,11 +1,11 @@
 [package]
 name = "opnlauncher"
-version = "0.1.0-dev.13"
+version = "0.1.0-dev.14"
 description = "A local-first Minecraft Java Edition launcher"
 authors = ["OpnLauncher contributors"]
 edition = "2021"
 license = "GPL-3.0-or-later"
-rust-version = "1.85"
+rust-version = "1.90"
 
 [lib]
 name = "opnlauncher_lib"
@@ -35,6 +35,7 @@ thiserror = "2.0"
 tauri = { version = "2", optional = true , features = [] }
 uuid = { version = "1.18", features = ["v4", "serde"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+horizon-prepare = { path = "horizon-upstream/crates/horizon-prepare" }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

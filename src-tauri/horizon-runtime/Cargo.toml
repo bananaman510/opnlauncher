@@ -1,0 +1,29 @@
+[package]
+name = "opnlauncher-horizon-runtime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+license = "MIT"
+
+[workspace]
+resolver = "2"
+
+[[bin]]
+name = "horizon-runtime"
+path = "src/main.rs"
+
+[dependencies]
+horizon-client = { path = "../horizon-upstream/crates/horizon-client", default-features = false }
+horizon-mods = { path = "../horizon-upstream/crates/horizon-mods" }
+horizon-threads = { path = "../horizon-upstream/crates/horizon-threads" }
+
+[features]
+default = ["audio", "controllers"]
+audio = ["horizon-client/audio"]
+controllers = ["horizon-client/controllers"]
+system-allocator = []
+
+[patch.crates-io]
+wgpu-hal = { path = "../horizon-upstream/third_party/wgpu-hal" }
+naga = { path = "../horizon-upstream/third_party/naga" }

@@ -46,13 +46,6 @@ pub struct MinecraftInstallation {
     pub versions: Vec<MinecraftVersion>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct HorizonToolDiscovery {
-    pub clients: Vec<String>,
-    pub preparers: Vec<String>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Instance {

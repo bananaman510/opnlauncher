@@ -1,12 +1,14 @@
 {
   "name": "opnlauncher",
   "private": true,
-  "version": "0.1.0-dev.13",
+  "version": "0.1.0-dev.14",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
+    "horizon:build:dev": "node scripts/build-horizon-runtime.mjs debug",
+    "horizon:build:release": "node scripts/build-horizon-runtime.mjs release",
     "tauri": "tauri"
   },
   "dependencies": {

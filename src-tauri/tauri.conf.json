@@ -3,9 +3,9 @@
   "productName": "OpnLauncher",
   "identifier": "org.opnlauncher.launcher",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run horizon:build:dev && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm run horizon:build:release",
     "frontendDist": "../dist"
   },
   "app": {
@@ -26,6 +26,20 @@
     "active": true,
     "targets": "all",
     "category": "Game",
-    "icon": ["icons/icon.png"]
+    "icon": ["icons/icon.png"],
+    "resources": {
+      "binaries/horizon-runtime.exe": "horizon/horizon-runtime.exe",
+      "horizon-upstream/LICENSE": "horizon-source/LICENSE",
+      "horizon-upstream/UPSTREAM.md": "horizon-source/UPSTREAM.md",
+      "horizon-upstream/THIRD_PARTY_NOTICES.md": "horizon-source/THIRD_PARTY_NOTICES.md",
+      "horizon-upstream/research-lock.json": "horizon-source/research-lock.json",
+      "horizon-upstream/third_party/wgpu-hal/LICENSE.MIT": "horizon-source/third_party/wgpu-hal/LICENSE.MIT",
+      "horizon-upstream/third_party/wgpu-hal/LICENSE.APACHE": "horizon-source/third_party/wgpu-hal/LICENSE.APACHE",
+      "horizon-upstream/third_party/naga/LICENSE.MIT": "horizon-source/third_party/naga/LICENSE.MIT",
+      "horizon-upstream/third_party/naga/LICENSE.APACHE": "horizon-source/third_party/naga/LICENSE.APACHE",
+      "horizon-upstream/crates/horizon-theme/fonts/OFL-PixelifySans.txt": "horizon-source/crates/horizon-theme/fonts/OFL-PixelifySans.txt",
+      "horizon-upstream/crates/horizon-theme/icons/pixel/LICENSE-pixelarticons.txt": "horizon-source/crates/horizon-theme/icons/pixel/LICENSE-pixelarticons.txt",
+      "horizon-upstream/mods/horizon/src/test/java/dev/horizonlab/parity": "horizon-source/mods/horizon/src/test/java/dev/horizonlab/parity"
+    }
   }
 }

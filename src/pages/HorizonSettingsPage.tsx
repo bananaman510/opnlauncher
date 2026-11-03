@@ -1,17 +1,13 @@
 import { ArrowDownToLine, Check, CircleAlert, Cpu, FolderOpen, Gauge, HardDrive, Info, LoaderCircle, Plus, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
 import { useState } from "react";
-import type { DownloadProgress, HorizonClientInfo, HorizonToolDiscovery, Instance, JavaRuntime, MinecraftInstallation } from "../types";
+import type { DownloadProgress, HorizonClientInfo, Instance, JavaRuntime, MinecraftInstallation } from "../types";
 
 interface HorizonSettingsPageProps {
   instances: Instance[];
   selectedInstance: Instance | null;
   onSelectInstance: (id: string) => void;
-  clientPath: string;
-  onClientPathChange: (path: string) => void;
   resourcesPath: string;
-  onResourcesPathChange: (path: string) => void;
-  preparerPath: string;
-  onPreparerPathChange: (path: string) => void;
+  resourcesReady: boolean;
   prepareJavaPath: string;
   onPrepareJavaPathChange: (path: string) => void;
   runtimes: JavaRuntime[];
@@ -21,13 +17,10 @@ interface HorizonSettingsPageProps {
   onAddMinecraftFolder: (path: string) => Promise<void>;
   onScanDevice: () => void;
   scanning: boolean;
-  tools: HorizonToolDiscovery;
   onPrepareResources: () => void;
   preparing: boolean;
   progress: DownloadProgress | null;
   clientInfo: HorizonClientInfo | null;
-  onInspectClient: () => void;
-  inspecting: boolean;
   error: string;
   width: number;
   height: number;
@@ -61,12 +54,10 @@ export function HorizonSettingsPage(props: HorizonSettingsPageProps) {
       <div className="settings-workspace horizon-settings-workspace">
         <main className="settings-content horizon-settings-content">
           <section className="settings-section-view">
-            <div className="settings-section-heading"><h2>Horizon runtime</h2><p>Connect OpnLauncher to the local Horizon client and its prepared game files.</p></div>
+            <div className="settings-section-heading"><h2>Horizon runtime</h2><p>OpnLauncher builds and manages Horizon directly from its included Rust source.</p></div>
             <div className="settings-group">
-              <header><span><strong>Horizon client</strong><small>OpnLauncher checks your PATH for Horizon tools when it opens.</small></span><Cpu size={17} /></header>
-              {props.tools.clients.length > 0 && <div className="select-wrap"><select className="field-control" aria-label="Detected Horizon clients" value={props.tools.clients.includes(props.clientPath) ? props.clientPath : ""} onChange={(event) => { if (event.target.value) props.onClientPathChange(event.target.value); }}><option value="">Choose a detected client</option>{props.tools.clients.map((path) => <option value={path} key={path}>{path}</option>)}</select><Gauge size={15} /></div>}
-              <div className="horizon-path-row"><input className="field-control" aria-label="Horizon client executable" placeholder="/path/to/horizon-client" value={props.clientPath} onChange={(event) => props.onClientPathChange(event.target.value)} /><button className="secondary-button" type="button" onClick={props.onInspectClient} disabled={!props.desktop || !props.clientPath.trim() || props.inspecting}>{props.inspecting ? <RefreshCw size={14} className="spin" /> : <Check size={14} />}{props.inspecting ? "Checking…" : "Verify client"}</button></div>
-              {props.clientInfo && <div className="horizon-verified"><Check size={15} /><span><strong>Horizon {props.clientInfo.version}</strong><small>Minecraft {props.clientInfo.minecraftVersion} · Launch interface {props.clientInfo.launchApi}</small></span></div>}
+              <header><span><strong>Integrated Horizon engine</strong><small>Game client source is built into OpnLauncher as a managed runtime.</small></span><Cpu size={17} /></header>
+              {props.clientInfo ? <div className="horizon-verified"><Check size={15} /><span><strong>Horizon {props.clientInfo.version} is included</strong><small>Minecraft {props.clientInfo.minecraftVersion} · Local profiles · telemetry disabled</small></span></div> : <p className="horizon-path-help"><CircleAlert size={14} /> The bundled Horizon runtime is not available in this build. Rebuild OpnLauncher to include it.</p>}
             </div>
             <div className="settings-group horizon-source-group">
               <header><span><strong>Find installed Minecraft files</strong><small>Search standard folders and common third-party launcher instances.</small></span><FolderOpen size={17} /></header>
@@ -79,20 +70,17 @@ export function HorizonSettingsPage(props: HorizonSettingsPageProps) {
               {minecraftFolderError && <p className="settings-inline-error" role="alert"><CircleAlert size={14} /> {minecraftFolderError}</p>}
             </div>
             <div className="settings-group">
-              <header><span><strong>Prepared game resources</strong><small>Folder produced by <code>horizon-prepare</code> from Minecraft 26.3 files.</small></span><FolderOpen size={17} /></header>
-              <div className="horizon-path-row"><input className="field-control" aria-label="Prepared Horizon resources folder" placeholder="/path/to/prepared-horizon-resources" value={props.resourcesPath} onChange={(event) => props.onResourcesPathChange(event.target.value)} onBlur={() => props.onResourcesPathChange(props.resourcesPath.trim())} /></div>
-              <p className="horizon-path-help"><HardDrive size={14} /> OpnLauncher uses this shared resource folder for Horizon profiles. Worlds, local settings, and mods stay in each profile's own folder.</p>
+              <header><span><strong>Prepared game resources</strong><small>Managed automatically from your own Minecraft 26.3 files.</small></span><FolderOpen size={17} /></header>
+              <div className="horizon-verified">{props.resourcesReady ? <Check size={15} /> : <Info size={15} />}<span><strong>{props.resourcesReady ? "Resources ready" : "Resources not prepared"}</strong><small>{props.resourcesPath || "OpnLauncher’s private Horizon folder"}</small></span></div>
+              <p className="horizon-path-help"><HardDrive size={14} /> The resource folder is managed by OpnLauncher. Worlds, local settings, and Horizon mods stay in each profile's own folder.</p>
             </div>
             <div className="settings-group horizon-prepare-group">
               <header><span><strong>Download and prepare Minecraft 26.3</strong><small>Fetch the official client, libraries, assets, and server file, then let Horizon prepare its Rust resources.</small></span><ArrowDownToLine size={17} /></header>
-              <label className="field-label" htmlFor="horizon-preparer-path">Horizon resource preparer</label>
-              {props.tools.preparers.length > 0 && <div className="select-wrap"><select className="field-control" aria-label="Detected Horizon resource preparers" value={props.tools.preparers.includes(props.preparerPath) ? props.preparerPath : ""} onChange={(event) => { if (event.target.value) props.onPreparerPathChange(event.target.value); }}><option value="">Choose a detected preparer</option>{props.tools.preparers.map((path) => <option value={path} key={path}>{path}</option>)}</select><Gauge size={15} /></div>}
-              <input id="horizon-preparer-path" className="field-control" aria-label="Horizon resource preparer executable" placeholder="Path to horizon-prepare" value={props.preparerPath} onChange={(event) => props.onPreparerPathChange(event.target.value)} />
               <label className="field-label" htmlFor="horizon-prepare-java">JDK 25 for preparation</label>
               <div className="select-wrap"><select id="horizon-prepare-java" className="field-control" value={props.prepareJavaPath} onChange={(event) => props.onPrepareJavaPathChange(event.target.value)}><option value="">Choose an installed Java 25 runtime</option>{props.runtimes.filter((runtime) => runtime.majorVersion === 25).map((runtime) => <option key={runtime.path} value={runtime.path}>{runtime.version} · {runtime.vendor ?? "JDK"}</option>)}</select><Gauge size={15} /></div>
               {props.runtimes.every((runtime) => runtime.majorVersion !== 25) && <p className="horizon-path-help"><Info size={14} /> Install JDK 25 and add its Java executable under Settings → Java Manager. Resource preparation needs a JDK, including <code>javac</code>.</p>}
-              <button className="play-button horizon-prepare-button" type="button" disabled={!props.desktop || !props.preparerPath.trim() || !props.prepareJavaPath || props.preparing} onClick={props.onPrepareResources}>{props.preparing ? <LoaderCircle size={16} className="spin" /> : <ArrowDownToLine size={16} />}{props.preparing ? "Preparing Horizon resources…" : "Download files & prepare Horizon"}</button>
-              {props.preparing && props.progress?.versionId.includes("Horizon") && <div className="install-progress-card"><div><LoaderCircle className="spin" size={16} /><strong>{props.progress.phase}</strong><span>{props.progress.totalFiles ? `${props.progress.completedFiles} / ${props.progress.totalFiles} files` : "This may take several minutes"}</span></div><div className="download-progress-track"><span style={{ width: `${props.progress.totalBytes ? Math.min(100, Math.round(props.progress.downloadedBytes / props.progress.totalBytes * 100)) : 0}%` }} /></div>{props.progress.currentFile && <small>{props.progress.currentFile}</small>}</div>}
+              <button className="play-button horizon-prepare-button" type="button" disabled={!props.desktop || !props.prepareJavaPath || props.preparing} onClick={props.onPrepareResources}>{props.preparing ? <LoaderCircle size={16} className="spin" /> : <ArrowDownToLine size={16} />}{props.preparing ? "Preparing Horizon resources…" : "Download files & prepare Horizon"}</button>
+              {props.preparing && props.progress?.versionId.includes("Horizon") && <div className="install-progress-card"><div><LoaderCircle className="spin" size={16} /><strong>{props.progress.phase}</strong><span>{props.progress.totalFiles ? `${props.progress.completedFiles} / ${props.progress.totalFiles} steps` : "This may take several minutes"}</span></div><div className="download-progress-track"><span style={{ width: `${props.progress.totalBytes ? Math.min(100, Math.round(props.progress.downloadedBytes / props.progress.totalBytes * 100)) : props.progress.totalFiles ? Math.min(100, Math.round(props.progress.completedFiles / props.progress.totalFiles * 100)) : 0}%` }} /></div>{props.progress.currentFile && <small>{props.progress.currentFile}</small>}</div>}
               <p className="horizon-path-help"><ShieldCheck size={14} /> Official game files are fetched from Mojang over HTTPS and verified against their published checksums. They stay in OpnLauncher’s local Horizon support folder; no Microsoft account or session is used.</p>
             </div>
             {props.error && <p className="settings-inline-error" role="alert"><CircleAlert size={14} /> {props.error}</p>}

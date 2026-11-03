@@ -16,30 +16,30 @@ OpnLauncher is not affiliated with, endorsed by, or associated with Mojang Studi
 | Mods | Browse Modrinth and CurseForge for a selected instance's Minecraft version and loader; install compatible builds and required dependencies; view project art; enable, disable, remove, bulk-delete, and switch installed mod versions. CurseForge requires your own API key for the current session. |
 | Java | Discover Java runtimes, inspect a custom executable, set a default or per-instance runtime, and choose memory for each instance. |
 | Local profiles | Create clearly labeled, unverified local developer profiles in development and release builds. Microsoft authentication and ownership checks are not implemented. |
-| Horizon | Create separate Minecraft 26.3 profiles for the native Rust-engine Horizon client, prepare official support files, configure local tools, and manage local `.hmod` content files. This integration is experimental and requires Horizon tools built separately. |
+| Horizon | Create separate Minecraft 26.3 profiles for the native Rust-engine Horizon client, prepare official support files, and manage local `.hmod` content files. Horizon's Rust source is included and built with OpnLauncher; Java `.jar` mods and Java loaders do not apply. |
 | Preferences and diagnostics | Store appearance and launcher preferences locally; view local launch output and process exit status. There is no automatic diagnostic upload. |
 
-The interface includes an overview, instance library, Minecraft version browser, mod browser, Horizon tools, downloads view, local profiles, and settings for appearance, Java, loaders, storage, privacy, and about.
+The interface includes an overview, instance library, Minecraft version browser, mod browser, Horizon engine settings, downloads view, local profiles, and settings for appearance, Java, loaders, storage, privacy, and about.
 
 ## Get OpnLauncher running on Linux
 
 ### Requirements
 
 - Linux desktop with GTK 3 and WebKitGTK 4.1 development libraries.
-- Rust stable **1.85 or later**, including Cargo.
+- Rust stable **1.90 or later**, including Cargo.
 - Node.js **20 or later** and npm.
-- Java for launching Minecraft. Use the Java version required by the selected Minecraft version; the app shows discovered runtimes and reports compatibility issues.
+- Java for launching Minecraft. Horizon resource preparation additionally needs a JDK 25 installation, including `javac`.
 - An internet connection for downloading the version list, game files, loaders, or mods. Local instance management and settings work without downloading new content.
 
 Install Rust with [rustup](https://rustup.rs/) if it is not already installed. Install Node.js and npm using your distribution or the [official Node.js downloads](https://nodejs.org/en/download/).
 
 ### Fedora
 
-Install the native Tauri build dependencies. `dbus-devel` and `pkgconf-pkg-config` are included because the Rust desktop build also needs the D-Bus development metadata and `pkg-config` executable.
+Install the native Tauri build dependencies. `dbus-devel` and `pkgconf-pkg-config` provide the D-Bus development metadata and `pkg-config`. ALSA and systemd development packages enable Horizon audio and controller support; if either is missing, the build continues without that optional feature.
 
 ```sh
 sudo dnf install webkit2gtk4.1-devel dbus-devel pkgconf-pkg-config openssl-devel curl wget file \
-  libappindicator-gtk3-devel librsvg2-devel libxdo-devel
+  libappindicator-gtk3-devel librsvg2-devel libxdo-devel alsa-lib-devel systemd-devel
 sudo dnf group install "c-development"
 ```
 
@@ -48,7 +48,7 @@ sudo dnf group install "c-development"
 ```sh
 sudo apt update
 sudo apt install libwebkit2gtk-4.1-dev libdbus-1-dev pkg-config build-essential curl wget file \
-  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libudev-dev
 ```
 
 For other distributions, use the matching packages from the [Tauri Linux prerequisites guide](https://v2.tauri.app/start/prerequisites/). Package names differ by distribution.
@@ -62,7 +62,7 @@ npm ci
 npm run tauri -- dev
 ```
 
-The first build compiles Rust dependencies and can take a while. The application window opens when the frontend and desktop backend are ready. `npm run dev` starts only the frontend preview; it does not provide the Rust commands needed for installation, local file access, or launching Minecraft.
+The first build compiles Rust dependencies and Horizon's native game engine and can take a while. The application window opens when the frontend, desktop backend, and managed Horizon runtime are ready. `npm run dev` starts only the frontend preview; it does not provide the Rust commands needed for installation, local file access, or launching Minecraft.
 
 ### Build a Linux AppImage
 
@@ -119,25 +119,22 @@ Horizon profiles use the separate Horizon Mods page. It manages local `.hmod` co
 
 ## Set up Horizon (experimental)
 
-Horizon is a separate native Rust game engine, not a Java loader. The current integration targets Minecraft **26.3** and does not build or bundle Horizon itself.
+Horizon is a separate native Rust game engine, not a Java loader. OpnLauncher includes the required Horizon source from upstream commit `fdd290b99b4459cb4803487758ba8015a45aa47f`, builds the game runtime as a separate process, and bundles it with desktop builds. The Horizon resource preparer is called as a Rust library; users do not need to build or configure Horizon executables.
 
 You need:
 
-- a local `horizon-client` compatible with Launch API `0.1.x` and Minecraft 26.3;
-- a compatible `horizon-prepare` executable;
 - a JDK 25 installation, including `javac`, for resource preparation;
 - a local OpnLauncher developer profile.
 
 Then:
 
-1. Build or obtain those Horizon executables separately. OpnLauncher can find tools on `PATH`; you can also enter their paths on the Horizon page.
-2. In **Settings → Java manager**, add or select the Java 25 executable for preparation.
-3. Open **Versions → Create Horizon profile**, or use **Add an instance** and choose Horizon.
-4. In **Horizon**, select a detected Minecraft 26.3 folder or add a folder. You can also let OpnLauncher download the needed official files into its private cache.
-5. Choose the preparer and Java 25 runtime, then choose **Download files & prepare Horizon**.
-6. Select the Horizon profile and local profile, then launch. Configure the Horizon client and prepared resource folder on the Horizon page if automatic discovery did not find them.
+1. In **Settings → Java manager**, add or select a Java 25 executable for preparation.
+2. Open **Versions → Create Horizon profile**, or use **Add an instance** and choose Horizon.
+3. In **Horizon**, select a detected Minecraft 26.3 folder or add a folder. OpnLauncher can instead download the official files into its private cache.
+4. Choose the Java 25 runtime and select **Download files & prepare Horizon**.
+5. Select the Horizon profile and local developer profile, then launch. The client and prepared resource directory are managed automatically.
 
-When reusing a local Minecraft installation, OpnLauncher copies only files that match Mojang's published size and SHA-1 metadata into its private Horizon cache. It does not write into the selected source folder. Missing or invalid files are downloaded from Mojang. Horizon profiles keep their worlds and personal settings separate from Java instances. The current Horizon launch and preparation flow has not yet been verified against a live Horizon build; see [Horizon integration notes](docs/HORIZON.md).
+When reusing a local Minecraft installation, OpnLauncher copies only files that match Mojang's published size and SHA-1 metadata into its private Horizon cache. It does not write into the selected source folder. Missing or invalid files are downloaded from Mojang. Horizon profiles keep their worlds and personal settings separate from Java instances. The integration is experimental and has not yet been validated in a live Horizon game session; see [Horizon integration notes](docs/HORIZON.md). Horizon's MIT license and third-party notices are in `src-tauri/horizon-upstream/`.
 
 ## Local accounts and online play
 
@@ -205,7 +202,7 @@ Useful project references:
 
 OpnLauncher is not yet feature-complete. Microsoft authentication, modpack management, NeoForge and Quilt installation, resource/shader pack support, backups, instance import/export, automatic update management, and cross-platform validation remain planned or unavailable. Very old Minecraft metadata may not install correctly. Java selection is currently explicit/manual, and version installation does not provide pause/resume or a complete repair workflow.
 
-Horizon support is experimental. Its local binaries and preparer must be obtained separately, and its integration has not been validated with a live game session. The project has no CI workflow or published release packages at this stage. See the [feature audit](docs/FEATURE_AUDIT.md) for the source-reviewed details and known gaps.
+Horizon support is experimental and has not been validated with a live game session. The project has no CI workflow or published release packages at this stage. See the [feature audit](docs/FEATURE_AUDIT.md) for the source-reviewed details and known gaps.
 
 ## License
 

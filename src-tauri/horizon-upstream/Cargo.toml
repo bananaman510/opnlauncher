@@ -1,0 +1,60 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/horizon-anticheat",
+    "crates/horizon-assets",
+    "crates/horizon-bench",
+    "crates/horizon-chat-filter",
+    "crates/horizon-client",
+    "crates/horizon-client-core",
+    "crates/horizon-client-input",
+    "crates/horizon-client-lib",
+    "crates/horizon-client-render",
+    "crates/horizon-command",
+    "crates/horizon-core",
+    "crates/horizon-dualsense",
+    "crates/horizon-friends",
+    "crates/horizon-hdr",
+    "crates/horizon-items",
+    "crates/horizon-mcp",
+    "crates/horizon-mods",
+    "crates/horizon-narrator",
+    "crates/horizon-optifine",
+    "crates/horizon-prepare",
+    "crates/horizon-protocol",
+    "crates/horizon-server-files",
+    "crates/horizon-shader-api",
+    "crates/horizon-shaders",
+    "crates/horizon-telemetry",
+    "crates/horizon-theme",
+    "crates/horizon-threads",
+    "crates/horizon-world",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+needless_range_loop = "allow"
+large_enum_variant = "allow"
+
+[patch.crates-io]
+wgpu-hal = { path = "third_party/wgpu-hal" }
+naga = { path = "third_party/naga" }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

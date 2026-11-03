@@ -1,26 +1,36 @@
 # Horizon integration
 
-OpnLauncher treats Horizon as a separate Minecraft 26.3 engine. Horizon instances have their own instance folder, local player file, worlds, settings, and data-only `.hmod` content mods. Java `.jar` mods, Fabric, Forge, NeoForge, and Quilt are not compatible with the native Horizon engine. Native `.hnmod` code mods are not managed by OpnLauncher.
+OpnLauncher includes Horizon's Rust Minecraft 26.3 client and the Rust resource preparer. Horizon is a separate game engine: it has its own instance folders, worlds, settings, local player data, and `.hmod` content mods. Java `.jar` mods and Fabric, Forge, NeoForge, or Quilt do not work with the native Horizon engine. OpnLauncher does not manage Horizon `.hnmod` code mods.
 
-## Local requirements
+## Included source and licenses
 
-- A locally built `horizon-client` executable that reports Launch API `0.1.x` and targets Minecraft 26.3.
-- A locally built `horizon-prepare` executable compatible with that client.
-- JDK 25, including `javac`, for resource preparation.
-- A local, unverified OpnLauncher developer profile.
+The vendored source is from Horizon commit `fdd290b99b4459cb4803487758ba8015a45aa47f`. The game runtime is built as a separate process and bundled by Tauri; resource preparation calls the included `horizon-prepare` Rust library. You do not need a separate Horizon checkout, client executable, or preparer executable.
 
-OpnLauncher searches `PATH` for the client and preparer when it opens. You can choose a detected tool or enter its path on the Horizon page. Add a Java 25 executable under Settings → Java Manager, then select it as the preparation JDK.
+Horizon source is MIT licensed. The upstream license and third-party notices remain in `src-tauri/horizon-upstream/LICENSE` and `src-tauri/horizon-upstream/THIRD_PARTY_NOTICES.md`. OpnLauncher remains GPL-3.0-or-later. The vendored source contains no Minecraft jars, assets, prepared resources, user data, or Horizon Git metadata. The launcher downloads the official game files only when you request preparation.
 
-OpnLauncher also searches the standard Minecraft folder and common PrismLauncher, PolyMC, MultiMC, ATLauncher, and GDLauncher instance folders. You can rescan or add another Minecraft folder from Horizon settings. If a selected installation contains Minecraft 26.3, OpnLauncher copies only files that match Mojang's published SHA-1 and size metadata into its private Horizon cache. It never writes into the selected source folder. Missing or invalid source files are downloaded from Mojang into the private cache; if no source is selected, the complete set is fetched there. The required server file is included. Horizon's preparer then builds the Rust-engine resources in a separate support folder. Repeating preparation verifies and reuses valid cached files and safely replaces the prepared resource directory after a successful run.
+## Requirements
 
-The Java and Horizon files are separate installations. Preparing Horizon does not replace or modify a standard Java instance, its mods, saves, or settings.
+- A local OpnLauncher developer profile. These profiles are unverified and do not sign in to Microsoft.
+- JDK 25, including `javac`, when preparing Horizon resources.
+- Internet access when official Minecraft files need downloading or repair.
+- For Linux development builds, the system libraries required by Tauri. ALSA and libudev development packages enable Horizon audio and controller support; if either is missing, that optional feature is left out of the runtime build.
+
+## Prepare and launch
+
+1. In **Settings → Java manager**, add or choose a JDK 25 runtime. Horizon's exporter tools need both `java` and `javac`.
+2. Create a Horizon instance from **Versions** or **Add an instance**.
+3. Open **Horizon** and choose an existing Minecraft 26.3 folder, add a folder, or leave the source unset to download files into OpnLauncher's private cache.
+4. Select **Download files & prepare Horizon**. OpnLauncher reuses only files verified against Mojang metadata, fetches missing official files over HTTPS, and calls the bundled Rust preparer. It does not modify the selected Minecraft source folder.
+5. Choose the Horizon instance and a local developer profile, then press **Play**.
+
+The client, preparer source inputs, downloaded Minecraft files, prepared resources, and logs are managed separately from normal Java instances. Worlds and local settings remain in each Horizon instance. Preparing or launching Horizon does not change standard Minecraft profiles.
 
 ## Offline and privacy behavior
 
-OpnLauncher passes the selected unverified local profile to Horizon without an authentication token. Microsoft sign-in is not part of this integration. Horizon processes are started with `HORIZON_TELEMETRY_URL=off`, which disables Horizon telemetry and its play ping. Resource preparation contacts Mojang's official metadata and file hosts when files need to be installed or repaired. No OpnLauncher-operated server is involved.
+Horizon launches use local, unverified profiles. OpnLauncher does not pass authentication tokens, implement Microsoft sign-in, or verify ownership for these profiles. The Horizon child process receives `HORIZON_TELEMETRY_URL=off`, disabling Horizon telemetry and its play ping. Resource preparation contacts Mojang's official metadata and file hosts only when that feature is requested. No OpnLauncher-operated server is used.
 
-Local profiles do not verify Minecraft ownership or authenticate to online servers. Use them for local single-player development and appropriately configured local testing only. Downloaded game files remain local and are not bundled or redistributed by OpnLauncher.
+Local profiles are for offline single-player development and appropriately configured local testing. They do not authenticate to online servers or bypass Minecraft ownership checks. Downloaded Minecraft files remain local and are not bundled or redistributed.
 
 ## Current limits
 
-Horizon support is experimental and currently limited to Minecraft 26.3. The Horizon client and preparer must be built or obtained separately; OpnLauncher currently launches and invokes the configured local tools but does not build or bundle Horizon. The launch API, resource preparation, `.hmod` behavior, and game session have not yet been validated against a live Horizon build. The Horizon Mods page manages local `.hmod` files only; it does not browse Modrinth or CurseForge, and it does not execute `.hnmod` code.
+Horizon support is experimental and fixed to Minecraft 26.3, matching the vendored upstream source. The game process and resource preparer are integrated, but a live game session has not yet been verified in this implementation. Java mods, Modrinth/CurseForge browsing for Horizon, and `.hnmod` code-mod management are not supported. The Horizon Mods page handles local `.hmod` content files only.

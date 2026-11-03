@@ -47,7 +47,7 @@ import { formatRelativeTime, javaLabel } from "./format";
 import type {
   Instance,
   HorizonClientInfo,
-  HorizonToolDiscovery,
+  HorizonEngineStatus,
   JavaRuntime,
   LaunchExitEvent,
   LaunchLogEvent,
@@ -185,15 +185,12 @@ function App() {
     const stored = Number(readStoredValue("default-memory-mb"));
     return Number.isFinite(stored) && stored >= 1024 && stored <= 16384 ? stored : 2048;
   });
-  const [horizonClientPath, setHorizonClientPath] = useState(() => readStoredValue("horizon-client-path") ?? "");
-  const [horizonPreparerPath, setHorizonPreparerPath] = useState(() => readStoredValue("horizon-preparer-path") ?? "");
   const [horizonPrepareJavaPath, setHorizonPrepareJavaPath] = useState(() => readStoredValue("horizon-prepare-java-path") ?? "");
-  const [horizonResourcesPath, setHorizonResourcesPath] = useState(() => readStoredValue("horizon-resources-path") ?? "");
+  const [horizonResourcesPath, setHorizonResourcesPath] = useState("");
+  const [horizonResourcesReady, setHorizonResourcesReady] = useState(false);
   const [horizonMinecraftSourcePath, setHorizonMinecraftSourcePath] = useState(() => readStoredValue("horizon-minecraft-source-path") ?? "");
-  const [horizonTools, setHorizonTools] = useState<HorizonToolDiscovery>({ clients: [], preparers: [] });
   const [horizonScanning, setHorizonScanning] = useState(false);
   const [horizonClientInfo, setHorizonClientInfo] = useState<HorizonClientInfo | null>(null);
-  const [horizonInspecting, setHorizonInspecting] = useState(false);
   const [horizonPreparing, setHorizonPreparing] = useState(false);
   const [horizonSettingsError, setHorizonSettingsError] = useState("");
   const [horizonWindowSettings, setHorizonWindowSettings] = useState<Record<string, HorizonWindowSettings>>(readHorizonWindowSettings);
@@ -277,11 +274,10 @@ function App() {
       setIsBusy(true);
       setBusyMessage("Checking this device");
       try {
-        const [savedInstances, foundInstallations, foundRuntimes, foundHorizonTools] = await Promise.all([
+        const [savedInstances, foundInstallations, foundRuntimes] = await Promise.all([
           invoke<Instance[]>("list_instances"),
           invoke<MinecraftInstallation[]>("scan_installations"),
           discoverJavaRuntimes(),
-          invoke<HorizonToolDiscovery>("discover_horizon_tools"),
         ]);
         if (cancelled) return;
         const detectedInstallations = [...foundInstallations];
@@ -307,9 +303,16 @@ function App() {
         setInstances(savedInstances);
         setInstallations(detectedInstallations);
         setRuntimes(foundRuntimes);
-        setHorizonTools(foundHorizonTools);
-        if (!horizonClientPath && foundHorizonTools.clients[0]) setHorizonClientPath(foundHorizonTools.clients[0]);
-        if (!horizonPreparerPath && foundHorizonTools.preparers[0]) setHorizonPreparerPath(foundHorizonTools.preparers[0]);
+        try {
+          const status = await invoke<HorizonEngineStatus>("inspect_horizon_engine");
+          setHorizonClientInfo(status.client);
+          setHorizonResourcesPath(status.resourcesPath);
+          setHorizonResourcesReady(status.resourcesReady);
+        } catch (reason) {
+          setHorizonClientInfo(null);
+          setHorizonResourcesReady(false);
+          setHorizonSettingsError(String(reason));
+        }
         if (!savedMinecraftSourceIsValid) {
           const matching = detectedInstallations.find((installation) => installation.versions.some((version) => version.id === "26.3"));
           if (matching) setHorizonMinecraftSourcePath(matching.root);
@@ -397,10 +400,7 @@ function App() {
     writeStoredValue("default-memory-mb", String(defaultMemoryMb));
   }, [defaultMemoryMb]);
 
-  useEffect(() => { writeStoredValue("horizon-client-path", horizonClientPath); }, [horizonClientPath]);
-  useEffect(() => { writeStoredValue("horizon-preparer-path", horizonPreparerPath); }, [horizonPreparerPath]);
   useEffect(() => { writeStoredValue("horizon-prepare-java-path", horizonPrepareJavaPath); }, [horizonPrepareJavaPath]);
-  useEffect(() => { writeStoredValue("horizon-resources-path", horizonResourcesPath); }, [horizonResourcesPath]);
   useEffect(() => { writeStoredValue("horizon-minecraft-source-path", horizonMinecraftSourcePath); }, [horizonMinecraftSourcePath]);
   useEffect(() => { writeStoredValue("horizon-window-settings", JSON.stringify(horizonWindowSettings)); }, [horizonWindowSettings]);
 
@@ -463,9 +463,8 @@ function App() {
     setHorizonScanning(true);
     setHorizonSettingsError("");
     try {
-      const [foundInstallations, foundTools, foundRuntimes] = await Promise.all([
+      const [foundInstallations, foundRuntimes] = await Promise.all([
         invoke<MinecraftInstallation[]>("scan_installations"),
-        invoke<HorizonToolDiscovery>("discover_horizon_tools"),
         discoverJavaRuntimes(),
       ]);
       const detectedInstallations = [...foundInstallations];
@@ -488,10 +487,11 @@ function App() {
         }
       }
       setInstallations(detectedInstallations.sort((a, b) => a.root.localeCompare(b.root)));
-      setHorizonTools(foundTools);
       setRuntimes(foundRuntimes);
-      if (!horizonClientPath && foundTools.clients[0]) setHorizonClientPath(foundTools.clients[0]);
-      if (!horizonPreparerPath && foundTools.preparers[0]) setHorizonPreparerPath(foundTools.preparers[0]);
+      const status = await invoke<HorizonEngineStatus>("inspect_horizon_engine");
+      setHorizonClientInfo(status.client);
+      setHorizonResourcesPath(status.resourcesPath);
+      setHorizonResourcesReady(status.resourcesReady);
       if (!savedMinecraftSourceIsValid) {
         const matching = detectedInstallations.find((installation) => installation.versions.some((version) => version.id === "26.3"));
         if (matching) setHorizonMinecraftSourcePath(matching.root);
@@ -807,8 +807,6 @@ function App() {
         ? await invoke<LaunchStarted>("launch_horizon_instance", {
           instanceId: selectedInstance.id,
           profileId: selectedProfile.id,
-          clientPath: horizonClientPath,
-          resourcesPath: horizonResourcesPath,
           width: selectedHorizonWindow.width,
           height: selectedHorizonWindow.height,
           fullscreen: selectedHorizonWindow.fullscreen,
@@ -825,23 +823,8 @@ function App() {
     }
   }
 
-  async function inspectHorizonClient() {
-    setHorizonInspecting(true);
-    setHorizonSettingsError("");
-    try {
-      const info = await invoke<HorizonClientInfo>("inspect_horizon_client", { path: horizonClientPath.trim() });
-      setHorizonClientInfo(info);
-      setHorizonClientPath(info.executable);
-    } catch (reason) {
-      setHorizonClientInfo(null);
-      setHorizonSettingsError(String(reason));
-    } finally {
-      setHorizonInspecting(false);
-    }
-  }
-
   async function prepareHorizonResources() {
-    if (isInstallingVersion || !horizonPreparerPath.trim() || !horizonPrepareJavaPath) return;
+    if (isInstallingVersion || !horizonPrepareJavaPath) return;
     const downloadId = crypto.randomUUID();
     activeDownloadIdRef.current = downloadId;
     setActiveDownloadId(downloadId);
@@ -860,12 +843,12 @@ function App() {
     setHorizonSettingsError("");
     try {
       const path = await invoke<string>("prepare_horizon_resources", {
-        preparerPath: horizonPreparerPath.trim(),
         javaPath: horizonPrepareJavaPath,
         minecraftSourcePath: horizonMinecraftSourcePath || null,
         downloadId,
       });
       setHorizonResourcesPath(path);
+      setHorizonResourcesReady(true);
       setDownloadProgress((current) => current ? {
         ...current,
         phase: "Installation complete",
@@ -896,14 +879,14 @@ function App() {
   const horizonSelected = selectedInstance?.engine === "horizon";
   const canLaunch = desktop && Boolean(selectedInstance && selectedProfile
     && (horizonSelected
-      ? horizonClientPath.trim() && horizonResourcesPath.trim()
+      ? horizonClientInfo && horizonResourcesReady
       : selectedInstance.versionId && selectedJava))
     && launchState !== "running" && !isBusy;
   const launchHint = !desktop ? "Open the desktop app to launch Minecraft."
     : !selectedInstance ? "Choose or install an instance to get started."
       : !selectedProfile ? "Create a local developer profile for testing."
-        : horizonSelected && !horizonClientPath.trim() ? "Set the Horizon client path in Horizon settings."
-          : horizonSelected && !horizonResourcesPath.trim() ? "Prepare Horizon 26.3 resources in Horizon settings."
+        : horizonSelected && !horizonClientInfo ? "The bundled Horizon engine is unavailable in this build."
+          : horizonSelected && !horizonResourcesReady ? "Download the official 26.3 files and prepare Horizon resources in Horizon settings."
             : !selectedInstance.versionId ? "Install a Minecraft version for this instance first."
               : !horizonSelected && !selectedJava ? "Select a Java runtime before launching."
                 : launchState === "running" ? "The selected game is running."
@@ -1168,13 +1151,8 @@ function App() {
               instances={instances}
               selectedInstance={selectedInstance}
               onSelectInstance={setSelectedInstanceId}
-              clientPath={horizonClientPath}
-              onClientPathChange={setHorizonClientPath}
-              onInspectClient={() => void inspectHorizonClient()}
               clientInfo={horizonClientInfo}
-              inspecting={horizonInspecting}
-              preparerPath={horizonPreparerPath}
-              onPreparerPathChange={setHorizonPreparerPath}
+              resourcesReady={horizonResourcesReady}
               prepareJavaPath={horizonPrepareJavaPath}
               onPrepareJavaPathChange={setHorizonPrepareJavaPath}
               runtimes={runtimes}
@@ -1184,12 +1162,10 @@ function App() {
               onAddMinecraftFolder={addHorizonMinecraftFolder}
               onScanDevice={() => void refreshHorizonDiscovery()}
               scanning={horizonScanning}
-              tools={horizonTools}
               onPrepareResources={() => void prepareHorizonResources()}
               preparing={horizonPreparing}
               progress={downloadProgress}
               resourcesPath={horizonResourcesPath}
-              onResourcesPathChange={setHorizonResourcesPath}
               error={horizonSettingsError}
               width={selectedHorizonWindow.width}
               height={selectedHorizonWindow.height}

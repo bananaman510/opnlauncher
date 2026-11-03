@@ -2,6 +2,20 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.14] - Unreleased
+
+### Added
+
+- Integrated Horizon's Rust client source and resource preparer source into OpnLauncher at upstream commit `fdd290b99b4459cb4803487758ba8015a45aa47f`; the native game runtime is built and bundled with the launcher.
+- Replaced user-configured Horizon executable paths with an included engine status and automatic resource-folder management. Resource preparation now calls Horizon's Rust library directly.
+- Preserved Horizon's MIT license and third-party notices, and documented the vendored source boundary and upstream revision.
+- Removed Horizon executable discovery from `PATH`; the launcher no longer asks users to select a separate client or preparer.
+
+### Improved
+
+- Kept Horizon's game process separate from the Tauri interface, with the bundled runtime forced to disable Horizon telemetry and play pings.
+- Continued using only local, unverified profiles for Horizon; no Microsoft sign-in or account tokens are introduced.
+
 ## [0.1.0-dev.13] - Unreleased
 
 ### Improved

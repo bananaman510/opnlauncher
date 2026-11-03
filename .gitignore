@@ -6,6 +6,7 @@ dist/
 /target/
 /src-tauri/target/
 /src-tauri/gen/
+/src-tauri/binaries/
 
 # Local application data and development artifacts
 *.sqlite3

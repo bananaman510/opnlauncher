@@ -12,15 +12,14 @@ use uuid::Uuid;
 
 use crate::database::Database;
 use crate::downloads::{self, DownloadProgress, ProgressSink, RemoteMinecraftVersion};
-use crate::horizon::{self, HorizonClientInfo, HorizonMod};
+use crate::horizon::{self, HorizonEngineStatus, HorizonMod};
 use crate::java;
 use crate::launch::{build_launch_plan, LaunchRequest};
 use crate::loaders::{self, InstalledLoaderProfile, LoaderVersion};
 use crate::minecraft;
 use crate::mods::{self, ModDownloadProgress};
 use crate::models::{
-    HorizonToolDiscovery, Instance, InstanceEngine, JavaRuntime, LaunchExitEvent, LaunchLogEvent,
-    LaunchStarted,
+    Instance, InstanceEngine, JavaRuntime, LaunchExitEvent, LaunchLogEvent, LaunchStarted,
     MinecraftInstallation, OfflineProfile,
 };
 
@@ -40,9 +39,75 @@ fn scan_installations() -> Vec<MinecraftInstallation> {
     minecraft::discover_installations()
 }
 
-#[tauri::command]
-fn discover_horizon_tools() -> HorizonToolDiscovery {
-    horizon::discover_tools()
+fn horizon_runtime_path(app: &AppHandle) -> std::result::Result<PathBuf, String> {
+    let development = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("binaries")
+        .join("horizon-runtime.exe");
+    if cfg!(debug_assertions) && development.is_file() {
+        return Ok(development);
+    }
+    let bundled = app
+        .path()
+        .resource_dir()
+        .map_err(display_error)?
+        .join("horizon/horizon-runtime.exe");
+    if bundled.is_file() {
+        return Ok(bundled);
+    }
+    if development.is_file() {
+        return Ok(development);
+    }
+    Err("The built-in Horizon engine is missing. Rebuild OpnLauncher so its Horizon runtime is included.".to_owned())
+}
+
+fn horizon_source_root(app: &AppHandle) -> std::result::Result<PathBuf, String> {
+    let development = Path::new(env!("CARGO_MANIFEST_DIR")).join("horizon-upstream");
+    if cfg!(debug_assertions)
+        && development.join("research-lock.json").is_file()
+        && development
+            .join("mods/horizon/src/test/java/dev/horizonlab/parity")
+            .is_dir()
+    {
+        return Ok(development);
+    }
+    let bundled = app
+        .path()
+        .resource_dir()
+        .map_err(display_error)?
+        .join("horizon-source");
+    if bundled.join("research-lock.json").is_file()
+        && bundled
+            .join("mods/horizon/src/test/java/dev/horizonlab/parity")
+            .is_dir()
+    {
+        return Ok(bundled);
+    }
+    if development.join("research-lock.json").is_file()
+        && development
+            .join("mods/horizon/src/test/java/dev/horizonlab/parity")
+            .is_dir()
+    {
+        return Ok(development);
+    }
+    Err("Horizon's bundled resource-preparation sources are missing from this OpnLauncher build.".to_owned())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn inspect_horizon_engine(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> std::result::Result<HorizonEngineStatus, String> {
+    let client = horizon::inspect_client(&horizon_runtime_path(&app)?).map_err(display_error)?;
+    let source_root = horizon_source_root(&app)?;
+    let resources = state.data_dir.join("horizon/resources");
+    let resources_ready = horizon_prepare::check(&source_root, &resources)
+        .map(|missing| missing.is_empty())
+        .unwrap_or(false);
+    Ok(HorizonEngineStatus {
+        client,
+        resources_path: resources.to_string_lossy().into_owned(),
+        resources_ready,
+    })
 }
 
 #[tauri::command]
@@ -532,13 +597,7 @@ fn create_horizon_instance(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn inspect_horizon_client(path: String) -> std::result::Result<HorizonClientInfo, String> {
-    horizon::inspect_client(Path::new(&path)).map_err(display_error)
-}
-
-#[tauri::command(rename_all = "camelCase")]
 async fn prepare_horizon_resources(
-    preparer_path: String,
     java_path: String,
     minecraft_source_path: Option<String>,
     download_id: String,
@@ -549,6 +608,7 @@ async fn prepare_horizon_resources(
         return Err("Horizon preparation is disabled in this build".to_owned());
     }
     Uuid::parse_str(&download_id).map_err(|_| "download identifier is invalid".to_owned())?;
+    let bundled_source_root = horizon_source_root(&app)?;
     let cancellation = Arc::new(AtomicBool::new(false));
     let active_downloads = Arc::clone(&state.active_downloads);
     {
@@ -574,6 +634,22 @@ async fn prepare_horizon_resources(
         let resources_dir = horizon_dir.join("resources");
         fs::create_dir_all(&minecraft_dir).map_err(display_error)?;
 
+        let java_executable = fs::canonicalize(&java_path)
+            .map_err(|error| format!("could not open the selected Java 25 runtime: {error}"))?;
+        let java_runtime = java::inspect_runtime(&java_executable).map_err(display_error)?;
+        if java_runtime.major_version != 25 {
+            return Err(format!(
+                "Horizon resource preparation needs JDK 25; selected Java is {}",
+                java_runtime.major_version
+            ));
+        }
+        let java_home = java_executable
+            .parent()
+            .and_then(Path::parent)
+            .filter(|home| home.join("bin").join(if cfg!(windows) { "javac.exe" } else { "javac" }).is_file())
+            .ok_or_else(|| "Horizon resource preparation needs a JDK 25 installation with javac".to_owned())?
+            .to_path_buf();
+
         downloads::install_horizon_version_using_source(
             "26.3",
             &minecraft_dir,
@@ -598,16 +674,62 @@ async fn prepare_horizon_resources(
             total_bytes: 0,
         });
 
+        let prepare_root = horizon_dir.join(format!("preparer-source-{}", &horizon::HORIZON_SOURCE_REVISION[..8]));
+        horizon::stage_preparer_inputs(&bundled_source_root, &prepare_root).map_err(display_error)?;
+
         let staging_dir = horizon_dir.join(format!(".resources-staging-{worker_download_id}"));
         fs::create_dir(&staging_dir).map_err(display_error)?;
-        let preparation = horizon::prepare_resources(
-            Path::new(&preparer_path),
-            &minecraft_dir,
-            &minecraft_dir.join("versions/26.3/26.3-server.jar"),
-            &staging_dir,
-            Path::new(&java_path),
-        )
-        .map_err(display_error);
+        let options = horizon_prepare::Options {
+            root: prepare_root.clone(),
+            import: true,
+            minecraft_dir: Some(minecraft_dir.clone()),
+            server_jar: Some(minecraft_dir.join("versions/26.3/26.3-server.jar")),
+            java_home: Some(java_home),
+            inputs: horizon_prepare::artifacts::Inputs::default(),
+            output: Some(staging_dir.clone()),
+        };
+        let progress_log_app = prepare_app.clone();
+        let progress_log_id = worker_download_id.clone();
+        let log = move |line: &str| {
+            let _ = progress_log_app.emit("download-progress", DownloadProgress {
+                download_id: progress_log_id.clone(),
+                version_id: "26.3 · Horizon".to_owned(),
+                phase: "Preparing Horizon resources".to_owned(),
+                current_file: line.to_owned(),
+                completed_files: 0,
+                total_files: 0,
+                downloaded_bytes: 0,
+                total_bytes: 0,
+            });
+        };
+        let progress_app = prepare_app.clone();
+        let progress_id = worker_download_id.clone();
+        let progress = move |fraction: f32| {
+            const SCALE: u64 = 1000;
+            let completed = (fraction.clamp(0.0, 1.0) * SCALE as f32) as u64;
+            let _ = progress_app.emit("download-progress", DownloadProgress {
+                download_id: progress_id.clone(),
+                version_id: "26.3 · Horizon".to_owned(),
+                phase: "Preparing Horizon resources".to_owned(),
+                current_file: "Building game resources from the selected Java 25 installation".to_owned(),
+                completed_files: completed,
+                total_files: SCALE,
+                downloaded_bytes: 0,
+                total_bytes: 0,
+            });
+        };
+        let preparation = horizon_prepare::prepare_with_progress(&options, &log, &progress)
+            .and_then(|prepared| {
+                if prepared != staging_dir {
+                    return Err("Horizon prepared resources in an unexpected folder".to_owned());
+                }
+                let missing = horizon_prepare::check(&prepare_root, &staging_dir)?;
+                if missing.is_empty() {
+                    Ok(prepared)
+                } else {
+                    Err(format!("Horizon resources are incomplete: {}", missing.join("; ")))
+                }
+            });
         if let Err(error) = preparation {
             let _ = fs::remove_dir_all(&staging_dir);
             return Err(error);
@@ -937,8 +1059,6 @@ fn launch_instance(
 fn launch_horizon_instance(
     instance_id: String,
     profile_id: String,
-    client_path: String,
-    resources_path: String,
     width: u32,
     height: u32,
     fullscreen: bool,
@@ -953,11 +1073,18 @@ fn launch_horizon_instance(
         return Err("select a Horizon instance before launching Horizon".to_owned());
     }
     let profile = state.database.get_offline_profile(&profile_id).map_err(display_error)?;
+    let client_path = horizon_runtime_path(&app)?;
+    let resources_path = state.data_dir.join("horizon/resources");
+    let source_root = horizon_source_root(&app)?;
+    let missing = horizon_prepare::check(&source_root, &resources_path).map_err(display_error)?;
+    if !missing.is_empty() {
+        return Err(format!("Horizon resources are not ready: {}", missing.join("; ")));
+    }
     let command = horizon::offline_command(
         &instance,
         &profile,
-        Path::new(&client_path),
-        Path::new(&resources_path),
+        &client_path,
+        &resources_path,
         width,
         height,
         fullscreen,
@@ -1143,7 +1270,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_instances,
             scan_installations,
-            discover_horizon_tools,
+            inspect_horizon_engine,
             list_official_versions,
             search_mod_projects,
             get_mod_project,
@@ -1165,7 +1292,6 @@ pub fn run() {
             register_installation,
             create_instance,
             create_horizon_instance,
-            inspect_horizon_client,
             prepare_horizon_resources,
             list_horizon_mods,
             install_horizon_mod,

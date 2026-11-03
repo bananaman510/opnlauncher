@@ -47,9 +47,10 @@ export interface HorizonClientInfo {
   launchApi: string;
 }
 
-export interface HorizonToolDiscovery {
-  clients: string[];
-  preparers: string[];
+export interface HorizonEngineStatus {
+  client: HorizonClientInfo;
+  resourcesPath: string;
+  resourcesReady: boolean;
 }
 
 export interface HorizonMod {

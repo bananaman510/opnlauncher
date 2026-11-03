@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -11,76 +9,13 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 use crate::error::{LauncherError, Result};
-use crate::java;
-use crate::models::{HorizonToolDiscovery, Instance, InstanceEngine, OfflineProfile};
+use crate::models::{Instance, InstanceEngine, OfflineProfile};
 
 const HORIZON_GAME_VERSION: &str = "26.3";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_MOD_BYTES: u64 = 512 * 1024 * 1024;
-const HORIZON_PREPARE_JAVA_VERSION: u32 = 25;
 
-pub fn discover_tools() -> HorizonToolDiscovery {
-    let mut client_paths = BTreeSet::new();
-    let mut preparer_paths = BTreeSet::new();
-    let mut clients = Vec::new();
-    let mut preparers = Vec::new();
-    if let Some(path) = env::var_os("PATH") {
-        for directory in env::split_paths(&path) {
-            discover_tool_in_directory(
-                &directory,
-                &tool_file_name("horizon-client"),
-                &mut client_paths,
-                &mut clients,
-            );
-            discover_tool_in_directory(
-                &directory,
-                &tool_file_name("horizon-prepare"),
-                &mut preparer_paths,
-                &mut preparers,
-            );
-        }
-    }
-    HorizonToolDiscovery {
-        clients,
-        preparers,
-    }
-}
-
-fn discover_tool_in_directory(
-    directory: &Path,
-    name: &str,
-    seen: &mut BTreeSet<PathBuf>,
-    found: &mut Vec<String>,
-) {
-    let Ok(canonical) = fs::canonicalize(directory.join(name)) else {
-        return;
-    };
-    let Ok(metadata) = fs::metadata(&canonical) else {
-        return;
-    };
-    if metadata.is_file() && is_executable(&metadata) && seen.insert(canonical.clone()) {
-        found.push(canonical.to_string_lossy().into_owned());
-    }
-}
-
-fn tool_file_name(base: &str) -> String {
-    if cfg!(windows) {
-        format!("{base}.exe")
-    } else {
-        base.to_owned()
-    }
-}
-
-#[cfg(unix)]
-fn is_executable(metadata: &fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn is_executable(_metadata: &fs::Metadata) -> bool {
-    true
-}
+pub const HORIZON_SOURCE_REVISION: &str = "fdd290b99b4459cb4803487758ba8015a45aa47f";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +24,14 @@ pub struct HorizonClientInfo {
     pub version: String,
     pub minecraft_version: String,
     pub launch_api: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HorizonEngineStatus {
+    pub client: HorizonClientInfo,
+    pub resources_path: String,
+    pub resources_ready: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -155,111 +98,92 @@ pub fn inspect_client(path: &Path) -> Result<HorizonClientInfo> {
     })
 }
 
-pub fn prepare_resources(
-    preparer_path: &Path,
-    minecraft_dir: &Path,
-    server_jar: &Path,
-    output_dir: &Path,
-    java_path: &Path,
-) -> Result<()> {
-    let preparer = valid_file(preparer_path, "Horizon resource preparer")?;
-    let minecraft_dir = fs::canonicalize(minecraft_dir).map_err(|_| {
-        LauncherError::NotFound(format!("Minecraft files at {}", minecraft_dir.display()))
-    })?;
-    if !minecraft_dir.is_dir() {
-        return Err(LauncherError::InvalidInput(
-            "Minecraft file location must be a folder".to_owned(),
-        ));
-    }
-    let version_json = minecraft_dir.join("versions/26.3/26.3.json");
-    let version: Value = serde_json::from_slice(&fs::read(&version_json).map_err(|_| {
-        LauncherError::Unsupported("install official Minecraft 26.3 files before preparing Horizon".to_owned())
-    })?)?;
-    if version.get("id").and_then(Value::as_str) != Some(HORIZON_GAME_VERSION)
-        || !minecraft_dir.join("versions/26.3/26.3.jar").is_file()
-        || !minecraft_dir.join("assets/indexes").is_dir()
-        || !minecraft_dir.join("assets/objects").is_dir()
-        || !minecraft_dir.join("libraries").is_dir()
-    {
-        return Err(LauncherError::Unsupported(
-            "Minecraft 26.3 client, libraries, and assets are incomplete; install or repair the files first".to_owned(),
-        ));
-    }
-    let server_jar = fs::canonicalize(server_jar).map_err(|_| {
-        LauncherError::NotFound(format!("Minecraft 26.3 server file at {}", server_jar.display()))
-    })?;
-    if !server_jar.is_file() {
-        return Err(LauncherError::InvalidInput(
-            "Minecraft server file path must be a file".to_owned(),
-        ));
-    }
-    let output_dir = fs::canonicalize(output_dir).map_err(|_| {
-        LauncherError::NotFound(format!("Horizon preparation folder at {}", output_dir.display()))
-    })?;
-    if !output_dir.is_dir() {
-        return Err(LauncherError::InvalidInput(
-            "Horizon output location must be a folder".to_owned(),
-        ));
-    }
-    let java_path = fs::canonicalize(java_path).map_err(|_| {
-        LauncherError::NotFound(format!("Java runtime at {}", java_path.display()))
-    })?;
-    let runtime = java::inspect_runtime(&java_path)?;
-    if runtime.major_version != HORIZON_PREPARE_JAVA_VERSION {
-        return Err(LauncherError::Unsupported(format!(
-            "Horizon resource preparation needs JDK 25; selected Java is {}",
-            runtime.major_version
-        )));
-    }
-    let java_home = java_path.parent().and_then(Path::parent).ok_or_else(|| {
-        LauncherError::InvalidInput("selected Java path must be inside a JDK bin folder".to_owned())
-    })?;
-    let javac_name = if cfg!(windows) { "javac.exe" } else { "javac" };
-    if !java_home.join("bin").join(javac_name).is_file() {
-        return Err(LauncherError::Unsupported(
-            "Horizon resource preparation needs a JDK 25 installation with javac".to_owned(),
-        ));
-    }
+pub fn stage_preparer_inputs(source_root: &Path, target_root: &Path) -> Result<()> {
+    let lock = source_root.join("research-lock.json");
+    ensure_source_directory(target_root)?;
+    copy_source_file(&lock, &target_root.join("research-lock.json"))?;
+    let sources = source_root.join("mods/horizon/src/test/java/dev/horizonlab/parity");
+    copy_source_tree(&sources, &target_root.join("mods/horizon/src/test/java/dev/horizonlab/parity"))
+}
 
-    let output = Command::new(preparer)
-        .arg("--prepare")
-        .arg("--server-jar")
-        .arg(server_jar)
-        .arg("--minecraft-dir")
-        .arg(minecraft_dir)
-        .arg("--output")
-        .arg(&output_dir)
-        .arg("--complete")
-        .arg("--progress")
-        .arg("json")
-        .arg("--java-home")
-        .arg(java_home)
-        .env("HORIZON_TELEMETRY_URL", "off")
-        .output()
-        .map_err(|error| {
-            LauncherError::Unsupported(format!("could not run Horizon resource preparer: {error}"))
-        })?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        let detail = detail.trim();
-        let detail = if detail.is_empty() {
-            String::from_utf8_lossy(&output.stdout).trim().to_owned()
-        } else {
-            detail.to_owned()
-        };
-        let detail = detail.chars().take(4000).collect::<String>();
+fn copy_source_tree(source: &Path, target: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if !metadata.file_type().is_dir() {
         return Err(LauncherError::Unsupported(format!(
-            "Horizon resource preparation failed ({}): {}",
-            output.status,
-            if detail.is_empty() { "no details were reported".to_owned() } else { detail }
+            "Horizon source data is not a regular folder: {}",
+            source.display()
         )));
     }
-    if fs::read_dir(output_dir)?.next().is_none() {
-        return Err(LauncherError::Unsupported(
-            "Horizon resource preparation finished without creating any files".to_owned(),
-        ));
+    ensure_source_directory(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_source_tree(&source_path, &target_path)?;
+        } else if file_type.is_file() {
+            copy_source_file(&source_path, &target_path)?;
+        } else {
+            return Err(LauncherError::Unsupported(format!(
+                "Horizon source data contains an unsupported file: {}",
+                source_path.display()
+            )));
+        }
     }
     Ok(())
+}
+
+fn copy_source_file(source: &Path, target: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if !metadata.file_type().is_file() {
+        return Err(LauncherError::Unsupported(format!(
+            "Horizon source data is not a regular file: {}",
+            source.display()
+        )));
+    }
+    if let Some(parent) = target.parent() {
+        ensure_source_directory(parent)?;
+    }
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            if fs::read(source)? != fs::read(target)? {
+                return Err(LauncherError::Unsupported(format!(
+                    "managed Horizon source data was modified: {}",
+                    target.display()
+                )));
+            }
+            return Ok(());
+        }
+        Ok(_) => {
+            return Err(LauncherError::Unsupported(format!(
+                "managed Horizon source path is not a regular file: {}",
+                target.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    fs::copy(source, target)?;
+    Ok(())
+}
+
+fn ensure_source_directory(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
+        Ok(_) => Err(LauncherError::Unsupported(format!(
+            "managed Horizon source folder is not a regular directory: {}",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent().filter(|parent| *parent != path) {
+                ensure_source_directory(parent)?;
+            }
+            fs::create_dir(path)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub fn offline_command(
@@ -670,7 +594,9 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{manifest_value, valid_offline_player_name, write_lines_atomic};
+    use super::{
+        manifest_value, stage_preparer_inputs, valid_offline_player_name, write_lines_atomic,
+    };
     use std::fs;
     use std::path::PathBuf;
     use uuid::Uuid;
@@ -700,6 +626,50 @@ mod tests {
         fs::write(&settings, "mod.first:true\n").unwrap();
         write_lines_atomic(&settings, &["mod.second:true".to_owned()]).unwrap();
         assert_eq!(fs::read_to_string(&settings).unwrap(), "mod.second:true\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stages_horizon_preparer_sources_without_overwriting_changes() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target")
+            .join(format!("horizon-source-test-{}", Uuid::new_v4()));
+        let source = root.join("upstream");
+        let target = root.join("managed");
+        let parity = source.join("mods/horizon/src/test/java/dev/horizonlab/parity");
+        fs::create_dir_all(&parity).unwrap();
+        fs::write(source.join("research-lock.json"), b"source lock").unwrap();
+        fs::write(parity.join("Oracle.java"), b"class Oracle {}\n").unwrap();
+
+        stage_preparer_inputs(&source, &target).unwrap();
+        assert_eq!(fs::read(target.join("research-lock.json")).unwrap(), b"source lock");
+        assert_eq!(
+            fs::read(target.join("mods/horizon/src/test/java/dev/horizonlab/parity/Oracle.java")).unwrap(),
+            b"class Oracle {}\n"
+        );
+        stage_preparer_inputs(&source, &target).unwrap();
+
+        fs::write(target.join("research-lock.json"), b"local change").unwrap();
+        assert!(stage_preparer_inputs(&source, &target).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinks_in_horizon_preparer_sources() {
+        use std::os::unix::fs::symlink;
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target")
+            .join(format!("horizon-source-link-test-{}", Uuid::new_v4()));
+        let source = root.join("upstream");
+        let parity = source.join("mods/horizon/src/test/java/dev/horizonlab/parity");
+        fs::create_dir_all(&parity).unwrap();
+        fs::write(source.join("research-lock.json"), b"source lock").unwrap();
+        fs::write(root.join("outside.java"), b"outside").unwrap();
+        symlink(root.join("outside.java"), parity.join("Oracle.java")).unwrap();
+
+        assert!(stage_preparer_inputs(&source, &root.join("managed")).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
