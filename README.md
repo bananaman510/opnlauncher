@@ -43,6 +43,14 @@ sudo dnf install webkit2gtk4.1-devel dbus-devel pkgconf-pkg-config openssl-devel
 sudo dnf group install "c-development"
 ```
 
+Horizon resource preparation also needs the JDK 25 development tools, including `javac`. Install Fedora's OpenJDK 25 development package with:
+
+```sh
+sudo dnf install java-25-openjdk-devel
+```
+
+The package provides the OpenJDK 25 development tools ([Fedora package details](https://packages.fedoraproject.org/pkgs/java-25-openjdk/java-25-openjdk-devel/)). In OpnLauncher, select Java 25 from that JDK under **Settings → Java Manager**; the selected Java installation must contain its matching `bin/javac`.
+
 ### Debian or Ubuntu
 
 ```sh
