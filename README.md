@@ -222,7 +222,7 @@ Useful project references:
 
 ## Current status and limitations
 
-OpnLauncher is not feature-complete. Microsoft authentication, modpack management, NeoForge and Quilt installation, resource/shader pack support, backups, instance import/export, automatic update management, and Windows/macOS validation remain unavailable. Very old Minecraft metadata may not install correctly. Java selection is currently explicit/manual, and version installation does not provide pause/resume or a complete repair workflow.
+OpnLauncher remains an early, incomplete prototype. Microsoft authentication, modpack management, NeoForge and Quilt installation, resource/shader pack support, backups, instance import/export, automatic update management, and Windows/macOS validation remain unavailable. Very old Minecraft metadata may not install correctly. Java selection is currently explicit/manual, and version installation does not provide pause/resume or a complete repair workflow.
 
 Horizon support is experimental, currently fixed to Minecraft 26.3, and does not support Java/Fabric mods. A maintainer has reported successful local Horizon gameplay, but this has not been independently reproduced across systems. Automated checks cover the Linux development path; Windows/macOS, all loader/provider flows, and a complete security audit remain open. See the [feature audit](docs/FEATURE_AUDIT.md) for evidence and known gaps.
 

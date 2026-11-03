@@ -69,4 +69,4 @@ The implementation is small and can be extended without replacing its architectu
 5. Validate Fabric and Forge installations with legitimate game files, then expand modpack and loader formats incrementally.
 6. Complete diagnostics, privacy/security review, Linux distribution validation, Windows/macOS support, and the remaining publication checklist before a stable release.
 
-This feature set is an incremental foundation; several planned capabilities remain open. Account authentication, modpacks, backup workflows, additional loader installers, advanced instance controls, and distribution work remain open roadmap items.
+This feature set is an incremental foundation. Account authentication, modpacks, backup workflows, additional loader installers, advanced instance controls, and distribution work remain open roadmap items.
