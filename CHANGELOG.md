@@ -2,6 +2,15 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.13] - Unreleased
+
+### Improved
+
+- Reworked the main navigation to keep readable section labels visible on desktop and tablet, with a labeled horizontal navigation on narrow windows.
+- Fixed Horizon settings inheriting the standard settings menu's narrow fixed-width column; Horizon setup now fills the available page width and uses a two-column card layout on wide windows.
+- Improved Horizon setup spacing, field sizing, and responsive path controls; the sidebar navigation can scroll independently on short windows.
+- Replaced the README with a complete Linux setup, AppImage build, first-run, instance, mod, Horizon, privacy, storage, and development guide, including current feature limits.
+
 ## [0.1.0-dev.12] - Unreleased
 
 ### Improved

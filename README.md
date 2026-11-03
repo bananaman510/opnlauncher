@@ -1,43 +1,41 @@
 # OpnLauncher
 
-OpnLauncher is an independent, local-first launcher for Minecraft Java Edition, with an experimental separate profile path for the Rust-powered Horizon Minecraft client. It is built with Tauri 2, Rust, React, TypeScript, and SQLite.
+OpnLauncher is an independent, local-first desktop launcher for Minecraft Java Edition. It is built with Tauri 2, Rust, React, TypeScript, and SQLite, with Linux as the current development platform.
 
-This repository is an early **development prototype**. It can browse Mojang's official vanilla version list and install compatible releases, snapshots, or historical versions into a new, separate instance directory. It also includes Modrinth mod discovery and compatible mod installation, plus CurseForge discovery when you provide your own API key. Fabric and Forge loader builds can be installed into a selected instance, and existing Fabric, Forge, NeoForge, and Quilt profiles can be selected from the loader manager. Modpacks are still planned.
+The project is an **early development prototype**. The vanilla install and launch workflows, Fabric and Forge setup, provider-backed mod management, and a separate experimental Horizon profile path are being developed incrementally. Some important flows have not yet been validated in a live desktop session with real game files. Read [Current status and limitations](#current-status-and-limitations) before relying on it for valuable worlds.
 
-OpnLauncher is not affiliated with, endorsed by, or associated with Mojang Studios or Microsoft. Minecraft is a trademark of Mojang Synergies AB. Minecraft game files are not bundled or redistributed by this project. When requested, OpnLauncher downloads official vanilla game files from URLs in Mojang's version metadata.
+OpnLauncher is not affiliated with, endorsed by, or associated with Mojang Studios or Microsoft. Minecraft is a trademark of Mojang Synergies AB. This project does not bundle or redistribute Minecraft game files. When you request an installation, it fetches official files using Mojang's version metadata.
 
-## Current features
+## What works today
 
-- Desktop interface with a compact icon rail, instance library, versions, mods, modpacks, accounts, downloads, and categorized settings.
-- Optional light theme, four accent colors, saved instance favorites, grid or list layouts, recent-instance sorting, and Ctrl/Cmd+K instance search.
-- SQLite storage for local instance metadata and development profiles.
-- Detection of common Minecraft directories and installed version metadata.
-- Manual inspection of another local Minecraft game directory.
-- Search and filter Mojang's official releases, snapshots, and older alpha/beta versions.
-- Install supported vanilla versions into a new isolated instance folder with bounded parallel downloads, progress, retry, cancellation, and upstream SHA-1/size checks.
-- Search Modrinth and CurseForge mods by Minecraft version and loader, inspect project images and build details, and filter results by category and popularity.
-- Install compatible mod builds with required dependencies, checksum/size verification, progress and cancellation; manage existing JARs by enabling, disabling, removing one or many, and switching versions.
-- Compare a mod's available releases with sortable and filterable Minecraft version, loader, and release-type controls. Switching replaces the selected mod only after the new file passes its integrity check.
-- Disable duplicate installs in Discover when the project is already present in the selected instance, including common Fabric JAR filename patterns.
-- Use CurseForge's official API with your own session-only key. The key stays in app memory, is sent only to CurseForge, and is not stored in the app database or preferences.
-- Detect Fabric, Forge, NeoForge, and Quilt from each installed version's metadata so search filters and compatible builds follow the selected instance.
-- Java runtime discovery through `JAVA_HOME`, `PATH`, and common Linux locations.
-- Java manager with custom executable validation, a preferred Java runtime, and per-instance Java selection.
-- Saved defaults for new instance Java selection and memory allocation.
-- Fabric and Forge version browsing and installation for the selected Minecraft version; installed loader profiles can be selected without removing worlds or mods.
-- Per-instance game setup for a chosen Minecraft version and Vanilla, Fabric, or Forge, followed by mod search filtered to that instance's installed setup.
-- Visibly unverified local developer profiles with stable offline UUIDs, available in development and release builds.
-- Separate Horizon 26.3 Rust-engine profiles with their own worlds, local settings, player files, and `.hmod` content-mod list.
-- Horizon resource preparation from official Mojang Minecraft 26.3 client, library, asset, and server files, with upstream integrity verification.
-- Saved local profile and instance selection for convenient testing between launches.
-- Local launch logs and process exit status.
-- No telemetry, analytics, ads, launcher account, or automatic diagnostic upload.
+| Area | Available now |
+| --- | --- |
+| Minecraft versions | Browse Mojang's releases, snapshots, and older alpha/beta entries; install supported vanilla versions into new managed instance folders. Very old metadata formats may not work. |
+| Instances | Create an empty profile, install a version, inspect/register a local installation, rename it, favorite it, choose Java and memory, and remove its library entry while preserving its files. |
+| Mod loaders | Install Fabric or Forge for a selected instance. Detect existing Fabric, Forge, NeoForge, and Quilt profiles; NeoForge and Quilt installation is not implemented yet. |
+| Mods | Browse Modrinth and CurseForge for a selected instance's Minecraft version and loader; install compatible builds and required dependencies; view project art; enable, disable, remove, bulk-delete, and switch installed mod versions. CurseForge requires your own API key for the current session. |
+| Java | Discover Java runtimes, inspect a custom executable, set a default or per-instance runtime, and choose memory for each instance. |
+| Local profiles | Create clearly labeled, unverified local developer profiles in development and release builds. Microsoft authentication and ownership checks are not implemented. |
+| Horizon | Create separate Minecraft 26.3 profiles for the native Rust-engine Horizon client, prepare official support files, configure local tools, and manage local `.hmod` content files. This integration is experimental and requires Horizon tools built separately. |
+| Preferences and diagnostics | Store appearance and launcher preferences locally; view local launch output and process exit status. There is no automatic diagnostic upload. |
 
-Developer profiles are available in release builds for local single-player testing and are always marked unverified. They do not authenticate with Microsoft, verify game ownership, or provide authenticated online-server access. Use them only with local single-player worlds or appropriately configured test servers. This feature does not bypass ownership checks.
+The interface includes an overview, instance library, Minecraft version browser, mod browser, Horizon tools, downloads view, local profiles, and settings for appearance, Java, loaders, storage, privacy, and about.
 
-## Linux development setup
+## Get OpnLauncher running on Linux
 
-You need Rust, Node.js with npm, Java for running Minecraft, and Tauri's Linux development libraries. The command below is for Fedora. For other distributions, follow the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) and install the matching GTK/WebKit development packages.
+### Requirements
+
+- Linux desktop with GTK 3 and WebKitGTK 4.1 development libraries.
+- Rust stable **1.85 or later**, including Cargo.
+- Node.js **20 or later** and npm.
+- Java for launching Minecraft. Use the Java version required by the selected Minecraft version; the app shows discovered runtimes and reports compatibility issues.
+- An internet connection for downloading the version list, game files, loaders, or mods. Local instance management and settings work without downloading new content.
+
+Install Rust with [rustup](https://rustup.rs/) if it is not already installed. Install Node.js and npm using your distribution or the [official Node.js downloads](https://nodejs.org/en/download/).
+
+### Fedora
+
+Install the native Tauri build dependencies. `dbus-devel` and `pkgconf-pkg-config` are included because the Rust desktop build also needs the D-Bus development metadata and `pkg-config` executable.
 
 ```sh
 sudo dnf install webkit2gtk4.1-devel dbus-devel pkgconf-pkg-config openssl-devel curl wget file \
@@ -45,36 +43,169 @@ sudo dnf install webkit2gtk4.1-devel dbus-devel pkgconf-pkg-config openssl-devel
 sudo dnf group install "c-development"
 ```
 
-From the repository root:
+### Debian or Ubuntu
 
 ```sh
-npm install
+sudo apt update
+sudo apt install libwebkit2gtk-4.1-dev libdbus-1-dev pkg-config build-essential curl wget file \
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+For other distributions, use the matching packages from the [Tauri Linux prerequisites guide](https://v2.tauri.app/start/prerequisites/). Package names differ by distribution.
+
+### Run from the source folder
+
+From the root of the OpnLauncher checkout:
+
+```sh
+npm ci
 npm run tauri -- dev
 ```
 
-The Vite frontend can also be opened in a browser with `npm run dev`, but local filesystem and process commands are available only in the desktop app.
+The first build compiles Rust dependencies and can take a while. The application window opens when the frontend and desktop backend are ready. `npm run dev` starts only the frontend preview; it does not provide the Rust commands needed for installation, local file access, or launching Minecraft.
 
-Useful checks:
+### Build a Linux AppImage
+
+Build a local AppImage with:
+
+```sh
+npm run tauri -- build --bundles appimage
+```
+
+Look in `src-tauri/target/release/bundle/appimage/` for the generated `.AppImage`. If you build with a custom `CARGO_TARGET_DIR`, the bundle is created under that target directory instead. Make the file executable and start it:
+
+```sh
+chmod +x ./OpnLauncher_VERSION_amd64.AppImage
+./OpnLauncher_VERSION_amd64.AppImage
+```
+
+Replace the example filename with the generated file's name. This produces a **local development build**; this repository does not currently provide a published AppImage download. AppImage portability depends on the system it was built on and the target system's libraries and desktop environment. Build and run it on the Linux distributions you intend to support. See Tauri's [AppImage guide](https://v2.tauri.app/distribute/appimage/) for its packaging details and limitations.
+
+## First launch and a basic play setup
+
+1. Open **Accounts** and create a local developer profile. It is visibly marked **unverified**. No Microsoft sign-in is available in the current prototype.
+2. Open **Instances** and choose **Add an instance**.
+   - Choose the official Minecraft version browser to create a new managed instance, or
+   - inspect and register an existing local Minecraft installation, or
+   - create an empty instance and configure it afterward.
+3. For a new or empty Java instance, open its **Configure** or **Game setup** control. Select the Minecraft version and Vanilla, Fabric, or Forge setup, then install. These files go into that instance's selected game folder.
+4. Select the instance and choose a compatible Java runtime in its settings. Use the runtime version required by that Minecraft version. Set the memory allocation as needed and save.
+5. Select your local profile, return to the overview or instance page, and press **Play**.
+6. Open **Downloads** to review the current install or preparation progress. Launch output and the process exit status are available in the local log view.
+
+The **Versions** page can install official vanilla releases, snapshots, and supported historical versions. A completed version download creates a new managed instance. It does not replace the official launcher's files. For modded play, configure Fabric or Forge for that instance, then use the **Mods** page; compatibility follows the selected instance.
+
+## Manage instances
+
+- **Select** an instance from the library or the current-instance selector on pages that provide one.
+- **Configure** a Java instance to change its Minecraft version or loader. Existing files that do not match expected upstream integrity data are left alone; saves and worlds are kept in place.
+- Choose Java and memory in the instance settings. The Java manager in **Settings** can add and inspect a custom Java executable and set the default for new instances.
+- **Rename** or favorite an instance from the library. The Storage settings list detected Minecraft locations and managed instance folders.
+- **Remove from library** forgets the launcher record and keeps the game directory on disk. This avoids silently deleting worlds, mods, or configuration files. To delete files, review and remove them yourself in the file manager after confirming the path.
+
+Registering an existing Minecraft folder points an instance at that folder; it does not copy it into an isolated managed directory. A registered folder can therefore be shared with another launcher or instance. Check the selected path before installing loaders or changing mods. New version downloads use separate managed instance folders.
+
+## Use the mod browser
+
+1. Select a Java instance that already has a Minecraft version and, if needed, Fabric or Forge installed.
+2. Open **Mods**. The instance context at the top shows which Minecraft and loader versions drive compatibility filtering.
+3. Choose **Modrinth** or **CurseForge**, search, and open a project to review its description, artwork, and available builds.
+4. Use **Install** on a compatible build. OpnLauncher checks the selected instance's Minecraft and loader context and installs required provider dependencies where available.
+5. Use **Installed** to search local mod files, enable or disable them, switch a mod to another compatible release, select multiple files, or remove files after confirmation.
+
+CurseForge requires a personal API key. Enter it in the provider prompt; it stays in app memory for the current run, is sent to CurseForge for its API requests, and is not saved in launcher preferences or the SQLite database. Mod files are third-party executable code. Install only projects you trust. The launcher does not sandbox mods or guarantee that a mod is safe.
+
+Horizon profiles use the separate Horizon Mods page. It manages local `.hmod` content files only. Java `.jar` mods and Java mod loaders do not work with Horizon; native `.hnmod` code mods are not managed by OpnLauncher.
+
+## Set up Horizon (experimental)
+
+Horizon is a separate native Rust game engine, not a Java loader. The current integration targets Minecraft **26.3** and does not build or bundle Horizon itself.
+
+You need:
+
+- a local `horizon-client` compatible with Launch API `0.1.x` and Minecraft 26.3;
+- a compatible `horizon-prepare` executable;
+- a JDK 25 installation, including `javac`, for resource preparation;
+- a local OpnLauncher developer profile.
+
+Then:
+
+1. Build or obtain those Horizon executables separately. OpnLauncher can find tools on `PATH`; you can also enter their paths on the Horizon page.
+2. In **Settings → Java manager**, add or select the Java 25 executable for preparation.
+3. Open **Versions → Create Horizon profile**, or use **Add an instance** and choose Horizon.
+4. In **Horizon**, select a detected Minecraft 26.3 folder or add a folder. You can also let OpnLauncher download the needed official files into its private cache.
+5. Choose the preparer and Java 25 runtime, then choose **Download files & prepare Horizon**.
+6. Select the Horizon profile and local profile, then launch. Configure the Horizon client and prepared resource folder on the Horizon page if automatic discovery did not find them.
+
+When reusing a local Minecraft installation, OpnLauncher copies only files that match Mojang's published size and SHA-1 metadata into its private Horizon cache. It does not write into the selected source folder. Missing or invalid files are downloaded from Mojang. Horizon profiles keep their worlds and personal settings separate from Java instances. The current Horizon launch and preparation flow has not yet been verified against a live Horizon build; see [Horizon integration notes](docs/HORIZON.md).
+
+## Local accounts and online play
+
+Local developer profiles are available in both development and release builds for offline testing. Their names and stable offline UUIDs are stored locally and are clearly marked unverified. They do **not** sign in to Microsoft, verify Minecraft ownership, provide an authenticated session, or enable authenticated online-server access. Use them for local single-player testing or appropriately configured local development servers only. OpnLauncher does not bypass ownership checks.
+
+Microsoft OAuth, ownership/entitlement verification, secure token storage, account switching, and authenticated online launch are not implemented. Do not enter a Microsoft password or token into OpnLauncher.
+
+## Privacy and network activity
+
+OpnLauncher has no analytics, telemetry, ads, tracking, crash-reporting service, launcher account, or automatic diagnostic upload. Settings, launcher logs, profile records, and instance metadata are local. No OpnLauncher-operated service is required.
+
+Network requests happen when you use the feature that needs them:
+
+- Mojang's official metadata and file hosts for version browsing, vanilla installation, and Horizon resource preparation;
+- Fabric Meta or Forge Maven when browsing or installing those loaders;
+- Modrinth or CurseForge when searching for or installing provider content;
+- provider image/CDN hosts when viewing project artwork.
+
+The CurseForge key is only sent to CurseForge for the API. Network behavior and stored data are described in [PRIVACY.md](PRIVACY.md). You can manage local appearance, Java, loader, and storage settings in the app. Automatic update checks and Microsoft authentication are not implemented.
+
+## Where files are stored
+
+- The SQLite database, local launcher logs, managed instance folders, and shared download/cache data are placed in Tauri's per-user application data folder for this app (`org.opnlauncher.launcher`). The exact location depends on your operating system.
+- **Settings → Storage** shows detected Minecraft folders and registered/managed instance paths.
+- New vanilla version installs use a new managed instance directory. Mods are stored in the selected Java instance's `mods` directory. Horizon profiles store worlds and settings in their own instance directories; shared Horizon support files use a separate application-data subfolder.
+- Theme, accent, Java defaults, custom Java paths, favorites, and selected profile/instance preferences are stored in the local desktop WebView. They are not uploaded.
+- Registered existing Minecraft folders remain where they already are. Forgetting an instance preserves its files. Mod deletion and bulk deletion remove only selected mod JARs after confirmation.
+
+Keep your own backups of worlds and important configuration. The prototype does not yet provide instance backup and restore.
+
+## Development checks
+
+Run the frontend checks:
 
 ```sh
 npm run build
 npm run test
-cargo test --no-default-features --lib --manifest-path src-tauri/Cargo.toml
 ```
 
-`cargo tauri dev` is an alternative after installing the Tauri CLI. The npm script uses the project-local CLI.
+Run the Rust library tests and desktop backend check:
 
-## Local data
+```sh
+cargo test --offline --no-default-features --lib --manifest-path src-tauri/Cargo.toml
+cargo check --offline --features desktop --manifest-path src-tauri/Cargo.toml
+```
 
-The app stores its SQLite database, managed instance directories and downloaded vanilla game files, launch logs, and generated native-library cache in Tauri's application data directory. Downloads from the general version browser go into a separate new instance directory. When you choose Game setup for a specific instance, verified Minecraft and loader files are added to that instance's selected game folder; existing files that do not match the expected integrity data are left untouched. A registered local folder may be shared with another instance, and the app warns when it detects this. Horizon keeps its shared Minecraft 26.3 support files and prepared resources under an `horizon` subfolder in the same application data directory; each Horizon profile's worlds and personal files remain inside its own instance directory.
+These checks do not prove that provider downloads, loader installers, a Tauri window, or a real Minecraft/Horizon session work on a particular machine. Verify those separately before using important data.
 
-Interface and default preferences, including theme, accent color, default Java, default memory, custom Java paths, instance favorites, and selected instance and local profile, are stored locally in the desktop WebView. They are not uploaded. Mod files and their provider project/version references are stored in the selected instance's `mods` folder and SQLite database. Mod deletion is limited to the confirmed JAR files selected in the Installed view. A version switch stages and verifies the replacement before removing the previous mod file. Fabric libraries and loader profiles, or Forge installer output, are written to the selected game folder after you choose Install. Existing worlds are kept in place.
+## Repository and contribution policy
 
-## Development status
+Development currently uses a private, self-hosted Forgejo repository. Forgejo is the primary development remote; there is no automatic GitHub mirror or publication. GitHub publication is planned after the project is sufficiently stable and has completed its release-preparation review. See [CONTRIBUTING.md](CONTRIBUTING.md) for the project workflow and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
 
-The first milestone is still in progress. The vanilla installer handles official Minecraft version metadata, libraries, assets, and client files. Per-instance setup selects Minecraft, Fabric, or Forge before installation, and the Mods page follows the selected instance. Horizon integration currently requires local `horizon-client` and `horizon-prepare` executables, plus a JDK 25 for resource preparation; OpnLauncher searches `PATH` for Horizon tools and standard launcher folders for Minecraft installations, and can reuse checksum-verified Minecraft 26.3 files in its private cache. OpnLauncher does not build or bundle Horizon. Horizon's launch API and resource preparation have not yet been verified against a live Horizon binary or in-game session. See [Horizon setup](docs/HORIZON.md) for the current scope and requirements. Modpacks, Microsoft authentication, backups, and release packaging remain planned. Some very old Minecraft metadata formats may need additional support. See the roadmap for the remaining work.
+The project uses Semantic Versioning and is currently in the `0.1.0` development series. The human-readable history is in [CHANGELOG.md](CHANGELOG.md). Development commits do not imply a release, and this repository does not create release tags automatically.
 
-See [CHANGELOG.md](CHANGELOG.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [PRIVACY.md](PRIVACY.md) for more detail.
+Useful project references:
+
+- [Architecture](ARCHITECTURE.md)
+- [Privacy](PRIVACY.md)
+- [Security policy](SECURITY.md)
+- [Feature audit](docs/FEATURE_AUDIT.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Horizon setup and current limits](docs/HORIZON.md)
+
+## Current status and limitations
+
+OpnLauncher is not yet feature-complete. Microsoft authentication, modpack management, NeoForge and Quilt installation, resource/shader pack support, backups, instance import/export, automatic update management, and cross-platform validation remain planned or unavailable. Very old Minecraft metadata may not install correctly. Java selection is currently explicit/manual, and version installation does not provide pause/resume or a complete repair workflow.
+
+Horizon support is experimental. Its local binaries and preparer must be obtained separately, and its integration has not been validated with a live game session. The project has no CI workflow or published release packages at this stage. See the [feature audit](docs/FEATURE_AUDIT.md) for the source-reviewed details and known gaps.
 
 ## License
 
