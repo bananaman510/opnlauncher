@@ -15,6 +15,7 @@ use crate::downloads::{self, DownloadProgress, ProgressSink, RemoteMinecraftVers
 use crate::java;
 use crate::launch::{build_launch_plan, LaunchRequest};
 use crate::minecraft;
+use crate::mods::{self, ModDownloadProgress};
 use crate::models::{
     Instance, JavaRuntime, LaunchExitEvent, LaunchLogEvent, LaunchStarted, MinecraftInstallation,
     OfflineProfile,
@@ -42,6 +43,135 @@ async fn list_official_versions() -> std::result::Result<Vec<RemoteMinecraftVers
         .await
         .map_err(display_error)?
         .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn search_mod_projects(
+    provider: String,
+    query: String,
+    game_version: String,
+    loader: String,
+    sort: String,
+    offset: u32,
+    api_key: Option<String>,
+) -> std::result::Result<mods::ModSearchResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        mods::search_projects(&provider, &query, &game_version, &loader, &sort, offset, api_key.as_deref())
+    })
+    .await
+    .map_err(display_error)?
+    .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn get_mod_project(
+    provider: String,
+    project_id: String,
+    api_key: Option<String>,
+) -> std::result::Result<mods::ModProject, String> {
+    tauri::async_runtime::spawn_blocking(move || mods::get_project(&provider, &project_id, api_key.as_deref()))
+        .await
+        .map_err(display_error)?
+        .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn get_mod_project_versions(
+    provider: String,
+    project_id: String,
+    game_version: String,
+    loader: String,
+    api_key: Option<String>,
+) -> std::result::Result<Vec<mods::ModVersion>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        mods::get_project_versions(&provider, &project_id, &game_version, &loader, api_key.as_deref())
+    })
+    .await
+    .map_err(display_error)?
+    .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn inspect_instance_mod_context(
+    instance_id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<mods::ModInstanceContext, String> {
+    mods::inspect_instance(&state.database, &instance_id).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn list_installed_mods(
+    instance_id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<mods::InstalledMod>, String> {
+    mods::list_installed_mods(&state.database, &instance_id).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn set_mod_enabled(
+    instance_id: String,
+    file_name: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    mods::set_mod_enabled(&state.database, &instance_id, &file_name, enabled).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn remove_mod_file(
+    instance_id: String,
+    file_name: String,
+    confirmed: bool,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    mods::remove_mod(&state.database, &instance_id, &file_name, confirmed).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn install_mod_version(
+    instance_id: String,
+    provider: String,
+    project_id: String,
+    version_id: String,
+    download_id: String,
+    api_key: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> std::result::Result<Vec<mods::InstalledMod>, String> {
+    Uuid::parse_str(&download_id).map_err(|_| "download identifier is invalid".to_owned())?;
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let active_downloads = Arc::clone(&state.active_downloads);
+    {
+        let mut active = active_downloads.lock().map_err(display_error)?;
+        if active.contains_key(&download_id) {
+            return Err("a download with this identifier is already active".to_owned());
+        }
+        active.insert(download_id.clone(), Arc::clone(&cancellation));
+    }
+    let database = Arc::clone(&state.database);
+    let worker_download_id = download_id.clone();
+    let app_for_progress = app.clone();
+    let progress: mods::ModProgressSink = Arc::new(move |event: ModDownloadProgress| {
+        let _ = app_for_progress.emit("mod-download-progress", event);
+    });
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        mods::install_project_version(
+            &database,
+            &instance_id,
+            &provider,
+            &project_id,
+            &version_id,
+            api_key.as_deref(),
+            &worker_download_id,
+            cancellation,
+            progress,
+        )
+    })
+    .await;
+    if let Ok(mut active) = active_downloads.lock() {
+        active.remove(&download_id);
+    }
+    result.map_err(display_error)?.map_err(display_error)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -420,6 +550,14 @@ pub fn run() {
             list_instances,
             scan_installations,
             list_official_versions,
+            search_mod_projects,
+            get_mod_project,
+            get_mod_project_versions,
+            inspect_instance_mod_context,
+            list_installed_mods,
+            set_mod_enabled,
+            remove_mod_file,
+            install_mod_version,
             install_minecraft_version,
             cancel_download,
             inspect_installation,

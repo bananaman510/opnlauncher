@@ -2,6 +2,16 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.4] - Unreleased
+
+### Added
+
+- Added a dedicated Modrinth and CurseForge mod browser with Minecraft version and Fabric, Forge, NeoForge, or Quilt filtering, search, category chips, sorting, project art, and screenshot galleries.
+- Added compatible build details, required dependency installation, staged downloads, progress and cancellation, provider checksum/size verification, and no-overwrite installation.
+- Added local mod scanning plus enable, disable, and confirmed removal controls for the selected instance.
+- Kept the CurseForge API key session-only and added provider network/image disclosures.
+- Added mod-loader detection from installed version metadata and regression tests for loader, URL, and file-name validation.
+
 ## [0.1.0-dev.3] - Unreleased
 
 ### Added

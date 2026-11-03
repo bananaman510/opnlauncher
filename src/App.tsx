@@ -3,6 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import packageJson from "../package.json";
 import { DownloadsPage } from "./pages/DownloadsPage";
+import { ModsPage } from "./pages/ModsPage";
 import { VersionsPage } from "./pages/VersionsPage";
 import {
   ArrowRight,
@@ -125,6 +126,7 @@ function App() {
   const [installations, setInstallations] = useState<MinecraftInstallation[]>([]);
   const [runtimes, setRuntimes] = useState<JavaRuntime[]>([]);
   const [profiles, setProfiles] = useState<OfflineProfile[]>([]);
+  const [curseForgeApiKey, setCurseForgeApiKey] = useState("");
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(() => readStoredValue("selected-instance"));
   const [selectedProfileId, setSelectedProfileId] = useState(() => readStoredValue("selected-profile") ?? "");
   const [favoriteIds, setFavoriteIds] = useState<string[]>(() => readStoredIds("favorite-instances"));
@@ -807,12 +809,14 @@ function App() {
             <DownloadsPage progress={downloadProgress} active={isInstallingVersion} onCancel={() => void cancelDownload()} />
           ) : activePage === "accounts" ? (
             <AccountsPage profiles={profiles} selectedProfileId={selectedProfileId} onSelect={(profileId) => setSelectedProfileId(profileId)} onCreate={() => setShowProfileForm(true)} />
+          ) : activePage === "mods" ? (
+            <ModsPage desktop={desktop} instances={instances} selectedInstanceId={selectedInstanceId} onSelectInstance={setSelectedInstanceId} curseForgeKey={curseForgeApiKey} onCurseForgeKeyChange={setCurseForgeApiKey} />
           ) : activePage === "settings" ? (
             <SettingsPage runtimes={runtimes} installations={installations} refreshInstallations={() => void refreshInstallations()} theme={theme} onThemeChange={setTheme} accent={accent} onAccentChange={setAccent} />
           ) : (
             <>
-              <section className="page-heading"><div><p className="eyebrow"><PackageOpen size={14} /> MODDING WORKSPACE</p><h1>{activeNavigation.label}</h1><p className="page-subtitle">A focused place to manage {activePage === "mods" ? "mods and their required loaders" : "modpacks and their files"}.</p></div><span className="planned-badge"><span /> IN DEVELOPMENT</span></section>
-              <div className="feature-preview-card"><div className="preview-icon"><PackageOpen size={22} /></div><div><span className="eyebrow">PLANNED INCREMENTALLY</span><h2>{activePage === "mods" ? "Your mod library starts here." : "Modpacks, kept safely separate."}</h2><p>{activePage === "mods" ? "Loader detection, compatibility checks, and trusted provider search are planned for a later development phase." : "Import, update, and export workflows will preserve local changes before they touch your files."}</p><button className="text-link" type="button" onClick={() => setActivePage("versions")}>Browse Minecraft versions <ArrowRight size={15} /></button></div></div>
+              <section className="page-heading"><div><p className="eyebrow"><PackageOpen size={14} /> MODPACK WORKSPACE</p><h1>{activeNavigation.label}</h1><p className="page-subtitle">Create, install, and maintain modpacks without losing local changes.</p></div><span className="planned-badge"><span /> IN DEVELOPMENT</span></section>
+              <div className="feature-preview-card"><div className="preview-icon"><PackageOpen size={22} /></div><div><span className="eyebrow">PLANNED INCREMENTALLY</span><h2>Modpacks, kept safely separate.</h2><p>Import, update, and export workflows will preserve local changes before they touch your files.</p><button className="text-link" type="button" onClick={() => setActivePage("versions")}>Browse Minecraft versions <ArrowRight size={15} /></button></div></div>
             </>
           )}
 
