@@ -2,6 +2,13 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.16] - Unreleased
+
+### Fixed
+
+- Complete Horizon preparation now imports the verified Minecraft sound assets before checking resource completeness, matching Horizon preparer's `--complete` behavior.
+- Linux Horizon runtime builds now require ALSA development files so AppImages cannot silently omit game audio; missing `libudev` only disables optional controller support.
+
 ## [0.1.0-dev.15] - Unreleased
 
 ### Fixed

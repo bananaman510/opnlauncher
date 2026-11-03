@@ -35,7 +35,7 @@ Install Rust with [rustup](https://rustup.rs/) if it is not already installed. I
 
 ### Fedora
 
-Install the native Tauri build dependencies. `dbus-devel` and `pkgconf-pkg-config` provide the D-Bus development metadata and `pkg-config`. ALSA and systemd development packages enable Horizon audio and controller support; if either is missing, the build continues without that optional feature.
+Install the native Tauri build dependencies. `dbus-devel` and `pkgconf-pkg-config` provide the D-Bus development metadata and `pkg-config`. ALSA development files are required for Horizon audio on Linux; the AppImage build now stops with an install hint if they are missing, instead of producing a silent Horizon runtime. `systemd-devel` provides `libudev` for optional controller support; if that is missing, Horizon audio still builds.
 
 ```sh
 sudo dnf install webkit2gtk4.1-devel dbus-devel pkgconf-pkg-config openssl-devel curl wget file \
@@ -142,7 +142,7 @@ Then:
 4. Choose the Java 25 runtime and select **Download files & prepare Horizon**.
 5. Select the Horizon profile and local developer profile, then launch. The client and prepared resource directory are managed automatically.
 
-When reusing a local Minecraft installation, OpnLauncher copies only files that match Mojang's published size and SHA-1 metadata into its private Horizon cache. It does not write into the selected source folder. Missing or invalid files are downloaded from Mojang. Before preparation, OpnLauncher ensures the exact Minecraft 26.3 version manifest pinned by Horizon's included research lock is available in its private preparer cache, fetching it from Mojang on first use and checking its SHA-1 and client/server artifact identities. This lets Horizon prepare correctly when a launcher or a Mojang metadata update has changed the version JSON in the selected installation. Horizon profiles keep their worlds and personal settings separate from Java instances. The integration is experimental and has not yet been validated in a live Horizon game session; see [Horizon integration notes](docs/HORIZON.md). Horizon's MIT license and third-party notices are in `src-tauri/horizon-upstream/`.
+When reusing a local Minecraft installation, OpnLauncher copies only files that match Mojang's published size and SHA-1 metadata into its private Horizon cache. It does not write into the selected source folder. Missing or invalid files are downloaded from Mojang. Before preparation, OpnLauncher ensures the exact Minecraft 26.3 version manifest pinned by Horizon's included research lock is available in its private preparer cache, fetching it from Mojang on first use and checking its SHA-1 and client/server artifact identities. Preparation also imports Horizon's sounds from the verified Minecraft asset store (about 380 MB) before checking that resources are complete. Horizon profiles keep their worlds and personal settings separate from Java instances. The integration is experimental and has not yet been validated in a live Horizon game session; see [Horizon integration notes](docs/HORIZON.md). Horizon's MIT license and third-party notices are in `src-tauri/horizon-upstream/`.
 
 ## Local accounts and online play
 

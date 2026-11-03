@@ -596,6 +596,23 @@ fn create_horizon_instance(
     }
 }
 
+fn import_horizon_sound_assets(
+    prepare_root: &Path,
+    minecraft_dir: &Path,
+    resources_dir: &Path,
+    log: horizon_prepare::Log<'_>,
+) -> std::result::Result<(), String> {
+    horizon_prepare::add_assets(
+        "sounds",
+        prepare_root,
+        Some(resources_dir),
+        Some(minecraft_dir),
+        &horizon_prepare::artifacts::Inputs::default(),
+        log,
+    )
+    .map(|_| ())
+}
+
 #[tauri::command(rename_all = "camelCase")]
 async fn prepare_horizon_resources(
     java_path: String,
@@ -733,6 +750,44 @@ async fn prepare_horizon_resources(
             .and_then(|prepared| {
                 if prepared != staging_dir {
                     return Err("Horizon prepared resources in an unexpected folder".to_owned());
+                }
+                if cancellation.load(Ordering::Relaxed) {
+                    return Err("installation cancelled".to_owned());
+                }
+
+                let _ = prepare_app.emit("download-progress", DownloadProgress {
+                    download_id: worker_download_id.clone(),
+                    version_id: "26.3 · Horizon".to_owned(),
+                    phase: "Importing Horizon sound assets".to_owned(),
+                    current_file: "Copying verified Minecraft sounds (about 380 MB)".to_owned(),
+                    completed_files: 0,
+                    total_files: 0,
+                    downloaded_bytes: 0,
+                    total_bytes: 0,
+                });
+                let sound_app = prepare_app.clone();
+                let sound_download_id = worker_download_id.clone();
+                let sound_log = move |line: &str| {
+                    let _ = sound_app.emit("download-progress", DownloadProgress {
+                        download_id: sound_download_id.clone(),
+                        version_id: "26.3 · Horizon".to_owned(),
+                        phase: "Importing Horizon sound assets".to_owned(),
+                        current_file: line.to_owned(),
+                        completed_files: 0,
+                        total_files: 0,
+                        downloaded_bytes: 0,
+                        total_bytes: 0,
+                    });
+                };
+                import_horizon_sound_assets(
+                    &prepare_root,
+                    &minecraft_dir,
+                    &staging_dir,
+                    &sound_log,
+                )?;
+
+                if cancellation.load(Ordering::Relaxed) {
+                    return Err("installation cancelled".to_owned());
                 }
                 let missing = horizon_prepare::check(&prepare_root, &staging_dir)?;
                 if missing.is_empty() {
@@ -1197,7 +1252,110 @@ fn offline_profiles_enabled() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::offline_profiles_enabled;
+    use super::{import_horizon_sound_assets, offline_profiles_enabled};
+    use sha1::{Digest, Sha1};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use uuid::Uuid;
+
+    fn sha1_hex(bytes: &[u8]) -> String {
+        format!("{:x}", Sha1::digest(bytes))
+    }
+
+    fn write_fixture_file(path: &Path, bytes: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn complete_horizon_preparation_imports_sound_assets_before_checking() {
+        let test_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target")
+            .join(format!("horizon-sounds-test-{}", Uuid::new_v4()));
+        let prepare_root = test_root.join("prepare");
+        let minecraft_dir = test_root.join("minecraft");
+        let resources_dir = test_root.join("resources");
+        let sounds_json = br#"{"test:event":{}}"#;
+        let sound_file = b"OggS fixture sound";
+        let sounds_hash = sha1_hex(sounds_json);
+        let sound_hash = sha1_hex(sound_file);
+        let asset_index = serde_json::to_vec(&serde_json::json!({
+            "objects": {
+                "minecraft/sounds.json": {"hash": sounds_hash, "size": sounds_json.len()},
+                "minecraft/sounds/test/event.ogg": {"hash": sound_hash, "size": sound_file.len()}
+            }
+        }))
+        .unwrap();
+        let asset_index_hash = sha1_hex(&asset_index);
+        let client_hash = sha1_hex(b"fixture client");
+        let server_hash = sha1_hex(b"fixture server");
+        let version_json = serde_json::to_vec(&serde_json::json!({
+            "id": "26.3",
+            "javaVersion": {"majorVersion": 25},
+            "downloads": {
+                "client": {"sha1": client_hash},
+                "server": {"sha1": server_hash}
+            },
+            "assetIndex": {"id": "34", "sha1": asset_index_hash}
+        }))
+        .unwrap();
+        let version_hash = sha1_hex(&version_json);
+        let lock = serde_json::json!({
+            "minecraft": {
+                "version": "26.3",
+                "java_major": 25,
+                "manifest_sha1": version_hash,
+                "client_sha1": client_hash,
+                "server_sha1": server_hash
+            }
+        });
+        write_fixture_file(
+            &prepare_root.join("research-lock.json"),
+            lock.to_string().as_bytes(),
+        );
+        write_fixture_file(
+            &prepare_root.join(".local/minecraft/26.3/manifest.json"),
+            &version_json,
+        );
+        write_fixture_file(
+            &minecraft_dir.join("versions/26.3/26.3.json"),
+            &version_json,
+        );
+        write_fixture_file(&minecraft_dir.join("assets/indexes/34.json"), &asset_index);
+        for (hash, bytes) in [
+            (sounds_hash, sounds_json.as_slice()),
+            (sound_hash, sound_file.as_slice()),
+        ] {
+            write_fixture_file(
+                &minecraft_dir
+                    .join("assets/objects")
+                    .join(&hash[..2])
+                    .join(hash),
+                bytes,
+            );
+        }
+
+        import_horizon_sound_assets(
+            &prepare_root,
+            &minecraft_dir,
+            &resources_dir,
+            &|_| {},
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(resources_dir.join("assets/minecraft/sounds.json")).unwrap(),
+            sounds_json
+        );
+        assert_eq!(
+            fs::read(resources_dir.join("assets/minecraft/sounds/test/event.ogg")).unwrap(),
+            sound_file
+        );
+        assert!(horizon_prepare::missing_extras(&resources_dir)
+            .iter()
+            .all(|(command, _)| *command != "sounds"));
+        fs::remove_dir_all(test_root).unwrap();
+    }
 
     #[test]
     fn developer_profiles_remain_enabled_in_release_builds_with_the_feature() {

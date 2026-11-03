@@ -13,14 +13,14 @@ Horizon source is MIT licensed. The upstream license and third-party notices rem
 - A local OpnLauncher developer profile. These profiles are unverified and do not sign in to Microsoft.
 - JDK 25, including `javac`, when preparing Horizon resources.
 - Internet access when official Minecraft files need downloading or repair.
-- For Linux development builds, the system libraries required by Tauri. ALSA and libudev development packages enable Horizon audio and controller support; if either is missing, that optional feature is left out of the runtime build.
+- For Linux development and AppImage builds, the system libraries required by Tauri. ALSA development files are required for Horizon audio; the build stops with an install hint if they are missing. `libudev` development files add optional controller support, but are not required for audio.
 
 ## Prepare and launch
 
 1. In **Settings → Java manager**, add or choose a JDK 25 runtime. Horizon's exporter tools need both `java` and `javac`.
 2. Create a Horizon instance from **Versions** or **Add an instance**.
 3. Open **Horizon** and choose an existing Minecraft 26.3 folder, add a folder, or leave the source unset to download files into OpnLauncher's private cache.
-4. Select **Download files & prepare Horizon**. OpnLauncher reuses only files verified against Mojang metadata, fetches missing official files over HTTPS, and calls the bundled Rust preparer. It does not modify the selected Minecraft source folder.
+4. Select **Download files & prepare Horizon**. OpnLauncher reuses only files verified against Mojang metadata, fetches missing official files over HTTPS, and calls the bundled Rust preparer. It then copies the pinned sound assets into Horizon's resources and checks that preparation is complete. Sound import copies about 380 MB from the verified local Minecraft asset store. OpnLauncher does not modify the selected Minecraft source folder.
 5. Choose the Horizon instance and a local developer profile, then press **Play**.
 
 The client, preparer source inputs, downloaded Minecraft files, prepared resources, and logs are managed separately from normal Java instances. Worlds and local settings remain in each Horizon instance. Preparing or launching Horizon does not change standard Minecraft profiles.
