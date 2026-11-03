@@ -2,6 +2,7 @@ pub mod database;
 pub mod downloads;
 pub mod error;
 pub mod java;
+pub mod horizon;
 pub mod launch;
 pub mod loaders;
 pub mod minecraft;

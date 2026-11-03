@@ -2,6 +2,15 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.11] - Unreleased
+
+### Added
+
+- Added a separate Horizon Rust-engine instance flow for Minecraft 26.3, with local profile launches, isolated per-instance settings, and a distinct Horizon content-mod page.
+- Added official Minecraft 26.3 file preparation for Horizon, including the server artifact Horizon's preparer requires; existing client, library, and asset files are reused only when their upstream integrity data matches.
+- Kept Horizon launches unauthenticated and unverified, and disable Horizon telemetry and play pings for both launch and preparation processes.
+- Added Horizon setup documentation covering local executable and JDK 25 requirements, file storage, offline boundaries, and current experimental limitations.
+
 ## [0.1.0-dev.10] - Unreleased
 
 ### Fixed

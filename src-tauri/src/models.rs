@@ -1,5 +1,36 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InstanceEngine {
+    Minecraft,
+    Horizon,
+}
+
+impl InstanceEngine {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Minecraft => "minecraft",
+            Self::Horizon => "horizon",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "minecraft" => Ok(Self::Minecraft),
+            "horizon" => Ok(Self::Horizon),
+            _ => Err(rusqlite::Error::FromSqlConversionFailure(
+                8,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unknown instance engine {value}"),
+                )),
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MinecraftVersion {
@@ -20,6 +51,7 @@ pub struct MinecraftInstallation {
 pub struct Instance {
     pub id: String,
     pub name: String,
+    pub engine: InstanceEngine,
     pub game_dir: String,
     pub version_id: Option<String>,
     pub java_path: Option<String>,

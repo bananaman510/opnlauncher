@@ -1,6 +1,6 @@
 [package]
 name = "opnlauncher"
-version = "0.1.0-dev.10"
+version = "0.1.0-dev.11"
 description = "A local-first Minecraft Java Edition launcher"
 authors = ["OpnLauncher contributors"]
 edition = "2021"

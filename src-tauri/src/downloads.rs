@@ -221,7 +221,7 @@ pub fn install_version(
     cancelled: Arc<AtomicBool>,
     sink: ProgressSink,
 ) -> Result<()> {
-    install_version_with_policy(version_id, install_root, download_id, cancelled, sink, true)
+    install_version_with_policy(version_id, install_root, download_id, cancelled, sink, true, false)
 }
 
 pub fn install_version_for_instance(
@@ -231,7 +231,22 @@ pub fn install_version_for_instance(
     cancelled: Arc<AtomicBool>,
     sink: ProgressSink,
 ) -> Result<()> {
-    install_version_with_policy(version_id, install_root, download_id, cancelled, sink, false)
+    install_version_with_policy(version_id, install_root, download_id, cancelled, sink, false, false)
+}
+
+pub fn install_horizon_version(
+    version_id: &str,
+    install_root: &Path,
+    download_id: &str,
+    cancelled: Arc<AtomicBool>,
+    sink: ProgressSink,
+) -> Result<()> {
+    if version_id != "26.3" {
+        return Err(LauncherError::InvalidInput(
+            "Horizon currently supports Minecraft 26.3 only".to_owned(),
+        ));
+    }
+    install_version_with_policy(version_id, install_root, download_id, cancelled, sink, false, true)
 }
 
 fn install_version_with_policy(
@@ -241,6 +256,7 @@ fn install_version_with_policy(
     cancelled: Arc<AtomicBool>,
     sink: ProgressSink,
     require_empty_root: bool,
+    include_server_artifact: bool,
 ) -> Result<()> {
     if !is_safe_id(version_id) {
         return Err(LauncherError::InvalidInput(
@@ -315,6 +331,9 @@ fn install_version_with_policy(
     )?;
 
     add_client_download(&metadata, version_id, &mut files)?;
+    if include_server_artifact {
+        add_server_download(&metadata, version_id, &mut files)?;
+    }
     add_library_downloads(&metadata, &mut files)?;
     add_logging_download(&metadata, &mut files)?;
     add_asset_downloads(&asset_index_json, &mut files, &mut virtual_assets)?;
@@ -498,6 +517,35 @@ fn add_client_download(
     add_url(
         files,
         PathBuf::from("versions").join(version_id).join(format!("{version_id}.jar")),
+        url,
+        sha1,
+        size,
+    )
+}
+
+fn add_server_download(
+    metadata: &Value,
+    version_id: &str,
+    files: &mut BTreeMap<PathBuf, DownloadFile>,
+) -> Result<()> {
+    let server = metadata
+        .get("downloads")
+        .and_then(|downloads| downloads.get("server"))
+        .ok_or_else(|| LauncherError::Unsupported("Minecraft version metadata has no server download required by Horizon preparation".to_owned()))?;
+    let url = server
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| LauncherError::Unsupported("Minecraft server download has no URL".to_owned()))?;
+    let sha1 = optional_sha1(server.get("sha1"))?;
+    let size = optional_size(server.get("size"))?;
+    if sha1.is_none() && size.is_none() {
+        return Err(LauncherError::Unsupported(
+            "Minecraft server file has no checksum or expected size".to_owned(),
+        ));
+    }
+    add_url(
+        files,
+        PathBuf::from("versions").join(version_id).join(format!("{version_id}-server.jar")),
         url,
         sha1,
         size,
@@ -1149,6 +1197,38 @@ mod tests {
         assert!(files.contains_key(Path::new(&format!(
             "libraries/org/lwjgl/lwjgl/3.3.3/{native_filename}"
         ))));
+    }
+
+    #[test]
+    fn adds_verified_server_artifact_for_horizon_preparation() {
+        let metadata = serde_json::json!({
+            "downloads": {
+                "server": {
+                    "url": "https://piston-data.mojang.com/server.jar",
+                    "sha1": "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed",
+                    "size": 11
+                }
+            }
+        });
+        let mut files = BTreeMap::new();
+        add_server_download(&metadata, "26.3", &mut files).unwrap();
+        let file = files.get(Path::new("versions/26.3/26.3-server.jar")).unwrap();
+        assert_eq!(file.sha1.as_deref(), Some("2aae6c35c94fcfb415dbe95f408b9ce91ee846ed"));
+        assert_eq!(file.size, Some(11));
+        assert!(add_server_download(&serde_json::json!({"downloads": {}}), "26.3", &mut BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn horizon_downloader_is_pinned_to_its_supported_game_version() {
+        let sink: ProgressSink = Arc::new(|_| {});
+        let result = install_horizon_version(
+            "1.21.4",
+            Path::new("unused"),
+            "f019d8a0-676c-4b06-b5f8-8277e2fe5eed",
+            Arc::new(AtomicBool::new(false)),
+            sink,
+        );
+        assert!(matches!(result, Err(LauncherError::InvalidInput(_))));
     }
 
     #[test]

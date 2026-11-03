@@ -31,12 +31,30 @@ export interface DownloadProgress {
 export interface Instance {
   id: string;
   name: string;
+  engine: "minecraft" | "horizon";
   gameDir: string;
   versionId: string | null;
   javaPath: string | null;
   memoryMb: number;
   createdAt: number;
   lastPlayedAt: number | null;
+}
+
+export interface HorizonClientInfo {
+  executable: string;
+  version: string;
+  minecraftVersion: string;
+  launchApi: string;
+}
+
+export interface HorizonMod {
+  fileName: string;
+  id: string | null;
+  name: string | null;
+  version: string | null;
+  enabled: boolean;
+  size: number;
+  valid: boolean;
 }
 
 export interface JavaRuntime {

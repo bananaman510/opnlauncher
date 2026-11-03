@@ -508,6 +508,53 @@ select.field-control option { color: var(--text); background: var(--panel); }
 .new-instance-config-form .field-control { min-width: 0; flex: 1; min-height: 40px; }
 .new-instance-config-form .play-button { min-height: 40px; flex: 0 0 auto; padding: 0 12px; }
 .new-instance-config-form > small { color: var(--faint); font-size: 11px; line-height: 1.4; }
+
+.horizon-version-card { display: flex; align-items: center; gap: 14px; margin: 0 0 16px; padding: 16px; background: linear-gradient(115deg, color-mix(in srgb, var(--accent) 10%, var(--panel)), var(--panel)); border: 1px solid var(--accent-edge); border-radius: 14px; }
+.horizon-version-card > .version-note-icon { flex: 0 0 auto; }
+.horizon-version-card > div { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.horizon-version-card .eyebrow { margin: 0; }
+.horizon-version-card strong { font-size: 14px; }
+.horizon-version-card small { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.horizon-prepare-group { display: flex; flex-direction: column; gap: 9px; }
+.horizon-prepare-group .field-label { margin: 3px 0 0; }
+.horizon-prepare-group > .field-control { width: 100%; min-height: 40px; padding: 0 11px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 9px; font-size: 12px; }
+.horizon-prepare-button { align-self: flex-start; min-height: 40px; margin-top: 2px; }
+.horizon-instance-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.quick-create-engine { width: 168px; min-height: 39px; padding: 0 10px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 9px; font-size: 12px; }
+.horizon-settings-content { gap: 20px; }
+.horizon-path-row .field-control { min-width: 0; flex: 1; }
+.horizon-path-help { display: flex; align-items: flex-start; gap: 8px; margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.horizon-path-help > svg { flex: 0 0 auto; margin-top: 1px; color: var(--accent); }
+.horizon-verified { display: flex; align-items: center; gap: 9px; margin-top: 10px; color: #83d9ae; }
+.horizon-verified > span { display: flex; flex-direction: column; gap: 3px; }
+.horizon-verified small { color: var(--muted); font-size: 11px; }
+.horizon-window-size { display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; gap: 12px; }
+.horizon-window-size label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
+.horizon-window-size > span { padding-bottom: 11px; color: var(--faint); }
+.horizon-fullscreen { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.horizon-fullscreen > span { display: flex; flex-direction: column; gap: 4px; }
+.horizon-fullscreen small { color: var(--muted); font-size: 11px; }
+.horizon-mods-layout { display: flex; flex-direction: column; gap: 14px; }
+.horizon-mod-install-card, .horizon-installed-mods { display: flex; flex-direction: column; gap: 12px; }
+.horizon-mod-list { display: flex; flex-direction: column; }
+.horizon-mod-row { display: flex; align-items: center; gap: 10px; padding: 11px 0; border-top: 1px solid var(--line-soft); }
+.horizon-mod-icon { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; color: var(--accent); background: var(--accent-soft); border-radius: 10px; }
+.horizon-mod-icon.invalid { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.horizon-mod-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.horizon-mod-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.horizon-mod-copy small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.horizon-mod-status { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+.horizon-mod-status > span { width: 7px; height: 7px; background: var(--faint); border-radius: 50%; }
+.horizon-mod-status.enabled > span { background: #83d9ae; }
+
+@media (max-width: 720px) {
+  .horizon-version-card { align-items: flex-start; flex-wrap: wrap; }
+  .horizon-version-card > div { flex-basis: calc(100% - 48px); }
+  .horizon-version-card > button { width: 100%; justify-content: center; }
+  .quick-create-engine { flex: 1; }
+  .horizon-mod-row { flex-wrap: wrap; }
+  .horizon-mod-copy { flex-basis: calc(100% - 52px); }
+}
 .instance-setup-modal .modal-header { margin-bottom: 17px; }
 .instance-setup-panel { display: flex; flex-direction: column; gap: 13px; }
 .instance-setup-heading { display: flex; align-items: center; gap: 10px; }

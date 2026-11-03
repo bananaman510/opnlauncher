@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::error::{LauncherError, Result};
-use crate::models::{Instance, OfflineProfile};
+use crate::models::{Instance, InstanceEngine, OfflineProfile};
 
 pub struct Database {
     connection: Mutex<Connection>,
@@ -41,6 +41,7 @@ impl Database {
              CREATE TABLE IF NOT EXISTS instances (
                  id TEXT PRIMARY KEY NOT NULL,
                  name TEXT NOT NULL,
+                 engine TEXT NOT NULL DEFAULT 'minecraft',
                  game_dir TEXT NOT NULL,
                  version_id TEXT,
                  java_path TEXT,
@@ -67,6 +68,17 @@ impl Database {
                  PRIMARY KEY (instance_id, file_name)
              );",
         )?;
+        let columns = {
+            let mut statement = connection.prepare("PRAGMA table_info(instances)")?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        if !columns.iter().any(|column| column == "engine") {
+            connection.execute(
+                "ALTER TABLE instances ADD COLUMN engine TEXT NOT NULL DEFAULT 'minecraft'",
+                [],
+            )?;
+        }
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -77,13 +89,14 @@ impl Database {
             LauncherError::Unsupported("database lock was poisoned".to_owned())
         })?;
         let mut statement = connection.prepare(
-            "SELECT id, name, game_dir, version_id, java_path, memory_mb, created_at, last_played_at
+            "SELECT id, name, game_dir, version_id, java_path, memory_mb, created_at, last_played_at, engine
              FROM instances ORDER BY created_at DESC, name COLLATE NOCASE",
         )?;
         let rows = statement.query_map([], |row| {
             Ok(Instance {
                 id: row.get(0)?,
                 name: row.get(1)?,
+                engine: InstanceEngine::parse(&row.get::<_, String>(8)?)?,
                 game_dir: row.get(2)?,
                 version_id: row.get(3)?,
                 java_path: row.get(4)?,
@@ -102,13 +115,14 @@ impl Database {
         })?;
         connection
             .query_row(
-                "SELECT id, name, game_dir, version_id, java_path, memory_mb, created_at, last_played_at
+                "SELECT id, name, game_dir, version_id, java_path, memory_mb, created_at, last_played_at, engine
                  FROM instances WHERE id = ?1",
                 [id],
                 |row| {
                     Ok(Instance {
                         id: row.get(0)?,
                         name: row.get(1)?,
+                        engine: InstanceEngine::parse(&row.get::<_, String>(8)?)?,
                         game_dir: row.get(2)?,
                         version_id: row.get(3)?,
                         java_path: row.get(4)?,
@@ -139,6 +153,31 @@ impl Database {
         game_dir: &str,
         version_id: Option<&str>,
     ) -> Result<Instance> {
+        self.create_instance_with_engine(id, name, game_dir, version_id, InstanceEngine::Minecraft)
+    }
+
+    pub fn create_horizon_instance(&self, name: &str, game_dir: &str) -> Result<Instance> {
+        let id = Uuid::new_v4().to_string();
+        self.create_horizon_instance_with_id(&id, name, game_dir)
+    }
+
+    pub fn create_horizon_instance_with_id(
+        &self,
+        id: &str,
+        name: &str,
+        game_dir: &str,
+    ) -> Result<Instance> {
+        self.create_instance_with_engine(id, name, game_dir, Some("26.3"), InstanceEngine::Horizon)
+    }
+
+    fn create_instance_with_engine(
+        &self,
+        id: &str,
+        name: &str,
+        game_dir: &str,
+        version_id: Option<&str>,
+        engine: InstanceEngine,
+    ) -> Result<Instance> {
         Uuid::parse_str(id).map_err(|_| {
             LauncherError::InvalidInput("instance identifier is invalid".to_owned())
         })?;
@@ -151,6 +190,7 @@ impl Database {
         let instance = Instance {
             id: id.to_owned(),
             name,
+            engine,
             game_dir: game_dir.to_owned(),
             version_id: version_id.map(str::to_owned),
             java_path: None,
@@ -162,11 +202,12 @@ impl Database {
             LauncherError::Unsupported("database lock was poisoned".to_owned())
         })?;
         connection.execute(
-            "INSERT INTO instances (id, name, game_dir, version_id, java_path, memory_mb, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO instances (id, name, engine, game_dir, version_id, java_path, memory_mb, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 instance.id,
                 instance.name,
+                instance.engine.as_str(),
                 instance.game_dir,
                 instance.version_id,
                 instance.java_path,
@@ -530,6 +571,31 @@ mod tests {
         assert_eq!(profile.uuid, "a33ac9aa-13a8-3009-a068-bb1380a2d0b0");
         assert_eq!(profile.uuid, same_name.uuid);
         assert!(!profile.verified);
+    }
+
+    #[test]
+    fn creates_horizon_instance_as_a_separate_engine_at_26_3() {
+        let db = Database::in_memory().unwrap();
+        let instance = db.create_horizon_instance("Horizon test", "/managed/horizon").unwrap();
+        assert_eq!(instance.engine, InstanceEngine::Horizon);
+        assert_eq!(instance.version_id.as_deref(), Some("26.3"));
+        assert_eq!(db.get_instance(&instance.id).unwrap(), instance);
+    }
+
+    #[test]
+    fn migrates_old_instance_tables_to_vanilla_engine() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE instances (
+                id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, game_dir TEXT NOT NULL,
+                version_id TEXT, java_path TEXT, memory_mb INTEGER NOT NULL DEFAULT 2048,
+                created_at INTEGER NOT NULL, last_played_at INTEGER
+             );",
+        ).unwrap();
+        let db = Database::from_connection(connection).unwrap();
+        let instance = db.create_instance("Existing", "/managed/vanilla", Some("26.3")).unwrap();
+        assert_eq!(instance.engine, InstanceEngine::Minecraft);
+        assert!(db.list_instances().unwrap().iter().all(|saved| saved.engine == InstanceEngine::Minecraft));
     }
 
     #[test]

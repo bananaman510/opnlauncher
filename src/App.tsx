@@ -3,6 +3,8 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import packageJson from "../package.json";
 import { DownloadsPage } from "./pages/DownloadsPage";
+import { HorizonModsPage } from "./pages/HorizonModsPage";
+import { HorizonSettingsPage } from "./pages/HorizonSettingsPage";
 import { InstanceSetupPanel, type InstanceSetupSelection } from "./pages/InstanceSetupPanel";
 import { ModsPage } from "./pages/ModsPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -44,6 +46,7 @@ import {
 import { formatRelativeTime, javaLabel } from "./format";
 import type {
   Instance,
+  HorizonClientInfo,
   JavaRuntime,
   LaunchExitEvent,
   LaunchLogEvent,
@@ -64,6 +67,7 @@ const navigation = [
   { id: "instances", label: "Instances", icon: Boxes, group: "LIBRARY" },
   { id: "versions", label: "Versions", icon: Layers3, group: "LIBRARY" },
   { id: "mods", label: "Mods", icon: PackageOpen, group: "LIBRARY" },
+  { id: "horizon", label: "Horizon", icon: Sparkles, group: "LIBRARY" },
   { id: "modpacks", label: "Modpacks", icon: FolderOpen, group: "LIBRARY" },
   { id: "accounts", label: "Accounts", icon: UsersRound, group: "TOOLS" },
   { id: "downloads", label: "Downloads", icon: ArrowDownToLine, group: "TOOLS" },
@@ -102,6 +106,23 @@ function readStoredPaths(key: string): string[] {
     return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
   } catch {
     return [];
+  }
+}
+
+interface HorizonWindowSettings { width: number; height: number; fullscreen: boolean }
+
+function readHorizonWindowSettings(): Record<string, HorizonWindowSettings> {
+  try {
+    const parsed: unknown = JSON.parse(readStoredValue("horizon-window-settings") ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).flatMap(([id, item]) => {
+      if (!item || typeof item !== "object") return [];
+      const value = item as Partial<HorizonWindowSettings>;
+      if (!Number.isInteger(value.width) || !Number.isInteger(value.height) || typeof value.fullscreen !== "boolean") return [];
+      return [[id, { width: value.width as number, height: value.height as number, fullscreen: value.fullscreen }]];
+    }));
+  } catch {
+    return {};
   }
 }
 
@@ -163,6 +184,16 @@ function App() {
     const stored = Number(readStoredValue("default-memory-mb"));
     return Number.isFinite(stored) && stored >= 1024 && stored <= 16384 ? stored : 2048;
   });
+  const [horizonClientPath, setHorizonClientPath] = useState(() => readStoredValue("horizon-client-path") ?? "");
+  const [horizonPreparerPath, setHorizonPreparerPath] = useState(() => readStoredValue("horizon-preparer-path") ?? "");
+  const [horizonPrepareJavaPath, setHorizonPrepareJavaPath] = useState(() => readStoredValue("horizon-prepare-java-path") ?? "");
+  const [horizonResourcesPath, setHorizonResourcesPath] = useState(() => readStoredValue("horizon-resources-path") ?? "");
+  const [horizonClientInfo, setHorizonClientInfo] = useState<HorizonClientInfo | null>(null);
+  const [horizonInspecting, setHorizonInspecting] = useState(false);
+  const [horizonPreparing, setHorizonPreparing] = useState(false);
+  const [horizonSettingsError, setHorizonSettingsError] = useState("");
+  const [horizonWindowSettings, setHorizonWindowSettings] = useState<Record<string, HorizonWindowSettings>>(readHorizonWindowSettings);
+  const [newInstanceEngine, setNewInstanceEngine] = useState<"minecraft" | "horizon">("minecraft");
   const [selectedJavaPath, setSelectedJavaPath] = useState("");
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showInstanceSetup, setShowInstanceSetup] = useState(false);
@@ -202,6 +233,9 @@ function App() {
   selectedInstanceIdRef.current = selectedInstanceId;
 
   const selectedInstance = instances.find((instance) => instance.id === selectedInstanceId) ?? null;
+  const selectedHorizonWindow = selectedInstance?.engine === "horizon"
+    ? horizonWindowSettings[selectedInstance.id] ?? { width: 1280, height: 720, fullscreen: false }
+    : { width: 1280, height: 720, fullscreen: false };
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
   const selectedJava = runtimes.find((runtime) => runtime.path === selectedJavaPath)
     ?? (selectedJavaPath === "" ? runtimes[0] ?? null : null);
@@ -330,6 +364,19 @@ function App() {
   useEffect(() => {
     writeStoredValue("default-memory-mb", String(defaultMemoryMb));
   }, [defaultMemoryMb]);
+
+  useEffect(() => { writeStoredValue("horizon-client-path", horizonClientPath); }, [horizonClientPath]);
+  useEffect(() => { writeStoredValue("horizon-preparer-path", horizonPreparerPath); }, [horizonPreparerPath]);
+  useEffect(() => { writeStoredValue("horizon-prepare-java-path", horizonPrepareJavaPath); }, [horizonPrepareJavaPath]);
+  useEffect(() => { writeStoredValue("horizon-resources-path", horizonResourcesPath); }, [horizonResourcesPath]);
+  useEffect(() => { writeStoredValue("horizon-window-settings", JSON.stringify(horizonWindowSettings)); }, [horizonWindowSettings]);
+
+  useEffect(() => {
+    if (!horizonPrepareJavaPath) {
+      const jdk25 = runtimes.find((runtime) => runtime.majorVersion === 25);
+      if (jdk25) setHorizonPrepareJavaPath(jdk25.path);
+    }
+  }, [horizonPrepareJavaPath, runtimes]);
 
   useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
@@ -556,16 +603,18 @@ function App() {
     if (!instanceName.trim()) return;
     setError("");
     setIsBusy(true);
-    setBusyMessage("Creating instance");
+    setBusyMessage(newInstanceEngine === "horizon" ? "Creating Horizon profile" : "Creating instance");
     try {
-      const empty = await invoke<Instance>("create_instance", { name: instanceName });
-      const created = await applyInstanceDefaults(empty);
+      const empty = await invoke<Instance>(newInstanceEngine === "horizon" ? "create_horizon_instance" : "create_instance", { name: instanceName.trim() });
+      const created = newInstanceEngine === "horizon" ? empty : await applyInstanceDefaults(empty);
       setInstances((current) => [created, ...current]);
       setSelectedInstanceId(created.id);
       setInstanceName("");
+      setNewInstanceEngine("minecraft");
       setShowAddDialog(false);
       setActivePage("instances");
-      setShowInstanceSetup(true);
+      if (created.engine === "minecraft") setShowInstanceSetup(true);
+      else setActivePage("horizon");
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -655,10 +704,20 @@ function App() {
     setLaunchState("running");
     setBusyMessage("Starting Minecraft");
     try {
-      const started = await invoke<LaunchStarted>("launch_instance", {
-        instanceId: selectedInstance.id,
-        profileId: selectedProfile.id,
-      });
+      const started = selectedInstance.engine === "horizon"
+        ? await invoke<LaunchStarted>("launch_horizon_instance", {
+          instanceId: selectedInstance.id,
+          profileId: selectedProfile.id,
+          clientPath: horizonClientPath,
+          resourcesPath: horizonResourcesPath,
+          width: selectedHorizonWindow.width,
+          height: selectedHorizonWindow.height,
+          fullscreen: selectedHorizonWindow.fullscreen,
+        })
+        : await invoke<LaunchStarted>("launch_instance", {
+          instanceId: selectedInstance.id,
+          profileId: selectedProfile.id,
+        });
       setLogPath(started.logPath);
       setLogs((current) => [`Process ${started.pid} started. Local log: ${started.logPath}`, ...current]);
     } catch (reason) {
@@ -667,17 +726,90 @@ function App() {
     }
   }
 
+  async function inspectHorizonClient() {
+    setHorizonInspecting(true);
+    setHorizonSettingsError("");
+    try {
+      const info = await invoke<HorizonClientInfo>("inspect_horizon_client", { path: horizonClientPath.trim() });
+      setHorizonClientInfo(info);
+      setHorizonClientPath(info.executable);
+    } catch (reason) {
+      setHorizonClientInfo(null);
+      setHorizonSettingsError(String(reason));
+    } finally {
+      setHorizonInspecting(false);
+    }
+  }
+
+  async function prepareHorizonResources() {
+    if (isInstallingVersion || !horizonPreparerPath.trim() || !horizonPrepareJavaPath) return;
+    const downloadId = crypto.randomUUID();
+    activeDownloadIdRef.current = downloadId;
+    setActiveDownloadId(downloadId);
+    setDownloadProgress({
+      downloadId,
+      versionId: "26.3 · Horizon",
+      phase: "Preparing official Minecraft files",
+      currentFile: "Downloading the client, libraries, assets, and Horizon preparation file from Mojang",
+      completedFiles: 0,
+      totalFiles: 0,
+      downloadedBytes: 0,
+      totalBytes: 0,
+    });
+    setIsInstallingVersion(true);
+    setHorizonPreparing(true);
+    setHorizonSettingsError("");
+    try {
+      const path = await invoke<string>("prepare_horizon_resources", {
+        preparerPath: horizonPreparerPath.trim(),
+        javaPath: horizonPrepareJavaPath,
+        downloadId,
+      });
+      setHorizonResourcesPath(path);
+      setDownloadProgress((current) => current ? {
+        ...current,
+        phase: "Installation complete",
+        currentFile: path,
+        completedFiles: current.totalFiles,
+      } : current);
+    } catch (reason) {
+      const message = String(reason);
+      setHorizonSettingsError(message);
+      setDownloadProgress((current) => current ? {
+        ...current,
+        phase: message.toLowerCase().includes("cancel") ? "Installation cancelled" : "Installation failed",
+      } : current);
+    } finally {
+      activeDownloadIdRef.current = null;
+      setActiveDownloadId(null);
+      setIsInstallingVersion(false);
+      setHorizonPreparing(false);
+    }
+  }
+
+  function updateHorizonWindowSettings(value: HorizonWindowSettings) {
+    if (!selectedInstance || selectedInstance.engine !== "horizon") return;
+    setHorizonWindowSettings((current) => ({ ...current, [selectedInstance.id]: value }));
+  }
+
   const activeNavigation = navigation.find((item) => item.id === activePage) ?? navigation[0];
-  const canLaunch = desktop && Boolean(selectedInstance?.versionId && selectedProfile && selectedJava)
+  const horizonSelected = selectedInstance?.engine === "horizon";
+  const canLaunch = desktop && Boolean(selectedInstance && selectedProfile
+    && (horizonSelected
+      ? horizonClientPath.trim() && horizonResourcesPath.trim()
+      : selectedInstance.versionId && selectedJava))
     && launchState !== "running" && !isBusy;
   const launchHint = !desktop ? "Open the desktop app to launch Minecraft."
     : !selectedInstance ? "Choose or install an instance to get started."
-      : !selectedInstance.versionId ? "Install a Minecraft version for this instance first."
-        : !selectedProfile ? "Create a local developer profile for testing."
-          : !selectedJava ? "Select a Java runtime before launching."
-            : launchState === "running" ? "Minecraft is running."
-              : isBusy ? "The launcher is working."
-                : "Ready to launch.";
+      : !selectedProfile ? "Create a local developer profile for testing."
+        : horizonSelected && !horizonClientPath.trim() ? "Set the Horizon client path in Horizon settings."
+          : horizonSelected && !horizonResourcesPath.trim() ? "Prepare Horizon 26.3 resources in Horizon settings."
+            : !selectedInstance.versionId ? "Install a Minecraft version for this instance first."
+              : !horizonSelected && !selectedJava ? "Select a Java runtime before launching."
+                : launchState === "running" ? "The selected game is running."
+                  : isBusy ? "The launcher is working."
+                    : horizonSelected ? "Ready to launch Horizon offline with telemetry disabled."
+                      : "Ready to launch.";
   const versionedInstanceCount = instances.filter((instance) => instance.versionId).length;
 
   return (
@@ -771,12 +903,11 @@ function App() {
                     <div className="hero-topline"><span className="hero-kicker"><Zap size={14} /> QUICK PLAY</span><span className="hero-local-tag"><span /> LOCAL INSTANCE</span></div>
                     {selectedInstance ? (
                       <>
-                        <div className="hero-version"><Layers3 size={15} /> {selectedInstance.versionId ?? "No version installed"}</div>
+                        <div className="hero-version"><Layers3 size={15} /> {selectedInstance.engine === "horizon" ? `Minecraft ${selectedInstance.versionId} · Horizon (Rust)` : `Minecraft Java · ${selectedInstance.versionId ?? "No version installed"}`}</div>
                         <h2>{selectedInstance.name}</h2>
-                        <p className="hero-description">Your selected world is ready whenever you are.</p>
+                        <p className="hero-description">{selectedInstance.engine === "horizon" ? "A separate Rust-powered profile with its own local worlds and content mods." : "Your selected world is ready whenever you are."}</p>
                         <div className="hero-facts">
-                          <span><Cpu size={15} /> {selectedJava ? javaLabel(selectedJava.majorVersion) : "Java not selected"}</span>
-                          <span><HardDrive size={15} /> {formatMemory(memoryChoice)}</span>
+                          {selectedInstance.engine === "horizon" ? <><span><Sparkles size={15} /> Rust engine</span><span><ShieldCheck size={15} /> Local profile · offline</span></> : <><span><Cpu size={15} /> {selectedJava ? javaLabel(selectedJava.majorVersion) : "Java not selected"}</span><span><HardDrive size={15} /> {formatMemory(memoryChoice)}</span></>}
                           <span><Clock3 size={15} /> {formatRelativeTime(selectedInstance.lastPlayedAt)}</span>
                         </div>
                         <div className="hero-actions">
@@ -881,7 +1012,7 @@ function App() {
                       <article className={`library-instance-card ${selectedInstanceId === instance.id ? "selected" : ""}`} key={instance.id}>
                         <button className={`library-instance-art art-${index % 4}`} type="button" onClick={() => setSelectedInstanceId(instance.id)} aria-label={`Select ${instance.name}`}><Gamepad2 size={20} /><span className="art-grid-overlay" /></button>
                         <div className="library-instance-body">
-                          <div className="library-instance-heading"><button type="button" className="instance-title-button" onClick={() => setSelectedInstanceId(instance.id)}><strong>{instance.name}</strong><small>{instance.versionId ?? "No version installed"}</small></button><button className={`favorite-toggle ${favoriteIds.includes(instance.id) ? "is-favorite" : ""}`} type="button" onClick={() => toggleFavorite(instance.id)} aria-label={favoriteIds.includes(instance.id) ? "Remove from favorites" : "Add to favorites"} aria-pressed={favoriteIds.includes(instance.id)}><Star size={16} fill={favoriteIds.includes(instance.id) ? "currentColor" : "none"} /></button></div>
+                        <div className="library-instance-heading"><button type="button" className="instance-title-button" onClick={() => setSelectedInstanceId(instance.id)}><strong>{instance.name}</strong><small>{instance.engine === "horizon" ? `Horizon · Minecraft ${instance.versionId ?? "26.3"}` : `Minecraft Java · ${instance.versionId ?? "No version installed"}`}</small></button><button className={`favorite-toggle ${favoriteIds.includes(instance.id) ? "is-favorite" : ""}`} type="button" onClick={() => toggleFavorite(instance.id)} aria-label={favoriteIds.includes(instance.id) ? "Remove from favorites" : "Add to favorites"} aria-pressed={favoriteIds.includes(instance.id)}><Star size={16} fill={favoriteIds.includes(instance.id) ? "currentColor" : "none"} /></button></div>
                           <div className="library-instance-meta"><span><Clock3 size={13} /> {formatRelativeTime(instance.lastPlayedAt)}</span><span className={`install-state ${instance.versionId ? "ready" : "needs-setup"}`}><span /> {instance.versionId ? "Installed" : "Setup needed"}</span></div>
                         </div>
                       </article>
@@ -892,19 +1023,27 @@ function App() {
                   {selectedInstance && (
                     <section className="instance-settings-card">
                       <div className="details-card-topline"><span>INSTANCE SETTINGS</span><button className={`favorite-toggle ${favoriteIds.includes(selectedInstance.id) ? "is-favorite" : ""}`} type="button" onClick={() => toggleFavorite(selectedInstance.id)} aria-label={favoriteIds.includes(selectedInstance.id) ? "Remove from favorites" : "Add to favorites"} aria-pressed={favoriteIds.includes(selectedInstance.id)}><Star size={17} fill={favoriteIds.includes(selectedInstance.id) ? "currentColor" : "none"} /></button></div>
-                      <div className="details-instance-title"><span className="details-game-icon"><Gamepad2 size={22} /></span><span><strong>{selectedInstance.name}</strong><small>{selectedInstance.versionId ?? "No game version selected"}</small></span></div>
+                      <div className="details-instance-title"><span className="details-game-icon"><Gamepad2 size={22} /></span><span><strong>{selectedInstance.name}</strong><small>{selectedInstance.engine === "horizon" ? `Minecraft ${selectedInstance.versionId ?? "26.3"} · Horizon Rust engine` : selectedInstance.versionId ?? "No game version selected"}</small></span></div>
                       <div className="details-divider" />
-                      <div className="instance-game-summary"><span><strong>Game setup</strong><small>{selectedInstance.versionId ? "Change Minecraft or loader version" : "Choose Minecraft and a loader to begin"}</small></span><button className="secondary-button" type="button" onClick={() => setShowInstanceSetup(true)}><Wrench size={14} /> Configure</button></div>
-                      <label className="field-label" htmlFor="java-path">Java runtime</label>
-                      <div className="select-wrap"><select id="java-path" className="field-control" value={selectedJavaPath} onChange={(event) => setSelectedJavaPath(event.target.value)}><option value="">Automatic detection</option>{runtimes.map((runtime) => <option key={runtime.path} value={runtime.path}>Java {runtime.majorVersion} · {runtime.vendor ?? "Runtime"}</option>)}</select><ChevronDown size={16} /></div>
-                      {selectedJava ? <div className="runtime-description"><span className="runtime-dot" /><span><strong>{selectedJavaPath ? selectedJava.version : `Automatic · ${selectedJava.version}`}</strong><small title={selectedJava.path}>{selectedJava.path}</small></span><span className="runtime-architecture">{selectedJava.architecture ?? "Unknown"}</span></div> : <div className="inline-warning"><CircleAlert size={15} /><span>No Java runtime detected. Set JAVA_HOME, then refresh this page.</span></div>}
-
-                      <div className="memory-heading"><div><label className="field-label" htmlFor="memory">Memory allocation</label><small>Maximum RAM available to Minecraft</small></div><strong>{formatMemory(memoryChoice)}</strong></div>
-                      <input id="memory" className="memory-slider" type="range" min="1024" max="16384" step="512" value={memoryChoice} onChange={(event) => setMemoryChoice(Number(event.target.value))} aria-valuetext={formatMemory(memoryChoice)} style={{ background: `linear-gradient(90deg, var(--accent) 0%, var(--accent) ${((memoryChoice - 1024) / (16384 - 1024)) * 100}%, var(--line) ${((memoryChoice - 1024) / (16384 - 1024)) * 100}%, var(--line) 100%)` }} />
-                      <div className="slider-scale"><span>1 GB</span><span>16 GB</span></div>
-
+                      {selectedInstance.engine === "horizon" ? (
+                        <>
+                          <div className="instance-game-summary"><span><strong>Horizon game setup</strong><small>Separate native Rust engine for Minecraft 26.3</small></span><button className="secondary-button" type="button" onClick={() => setActivePage("horizon")}><Wrench size={14} /> Settings</button></div>
+                          <div className="horizon-instance-actions"><button className="secondary-button" type="button" onClick={() => setActivePage("mods")}><PackageOpen size={14} /> Manage Horizon mods</button><button className="settings-quiet-button" type="button" onClick={() => setActivePage("horizon")}><Cpu size={14} /> Client &amp; resources</button></div>
+                          <div className="settings-callout"><ShieldCheck size={15} /><span>Uses the selected unverified local profile. Microsoft sign-in is off and Horizon telemetry is disabled.</span></div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="instance-game-summary"><span><strong>Game setup</strong><small>{selectedInstance.versionId ? "Change Minecraft or loader version" : "Choose Minecraft and a loader to begin"}</small></span><button className="secondary-button" type="button" onClick={() => setShowInstanceSetup(true)}><Wrench size={14} /> Configure</button></div>
+                          <label className="field-label" htmlFor="java-path">Java runtime</label>
+                          <div className="select-wrap"><select id="java-path" className="field-control" value={selectedJavaPath} onChange={(event) => setSelectedJavaPath(event.target.value)}><option value="">Automatic detection</option>{runtimes.map((runtime) => <option key={runtime.path} value={runtime.path}>Java {runtime.majorVersion} · {runtime.vendor ?? "Runtime"}</option>)}</select><ChevronDown size={16} /></div>
+                          {selectedJava ? <div className="runtime-description"><span className="runtime-dot" /><span><strong>{selectedJavaPath ? selectedJava.version : `Automatic · ${selectedJava.version}`}</strong><small title={selectedJava.path}>{selectedJava.path}</small></span><span className="runtime-architecture">{selectedJava.architecture ?? "Unknown"}</span></div> : <div className="inline-warning"><CircleAlert size={15} /><span>No Java runtime detected. Set JAVA_HOME, then refresh this page.</span></div>}
+                          <div className="memory-heading"><div><label className="field-label" htmlFor="memory">Memory allocation</label><small>Maximum RAM available to Minecraft</small></div><strong>{formatMemory(memoryChoice)}</strong></div>
+                          <input id="memory" className="memory-slider" type="range" min="1024" max="16384" step="512" value={memoryChoice} onChange={(event) => setMemoryChoice(Number(event.target.value))} aria-valuetext={formatMemory(memoryChoice)} style={{ background: `linear-gradient(90deg, var(--accent) 0%, var(--accent) ${((memoryChoice - 1024) / (16384 - 1024)) * 100}%, var(--line) ${((memoryChoice - 1024) / (16384 - 1024)) * 100}%, var(--line) 100%)` }} />
+                          <div className="slider-scale"><span>1 GB</span><span>16 GB</span></div>
+                          <button className="save-button" type="button" onClick={() => void saveInstanceSettings()} disabled={isSavingSettings}>{isSavingSettings ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{isSavingSettings ? "Saving settings…" : "Save settings"}</button>
+                        </>
+                      )}
                       <div className="detail-path"><HardDrive size={15} /><span title={selectedInstance.gameDir}>{selectedInstance.gameDir}</span></div>
-                      <button className="save-button" type="button" onClick={() => void saveInstanceSettings()} disabled={isSavingSettings}>{isSavingSettings ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{isSavingSettings ? "Saving settings…" : "Save settings"}</button>
                       <button className="detail-launch-button" type="button" disabled={!canLaunch} onClick={() => void launchSelected()}><Play size={15} fill="currentColor" /> Launch this instance</button>
                       <div className="instance-action-links"><button type="button" onClick={() => { setRenameValue(selectedInstance.name); setShowRenameDialog(true); }}>Rename</button><button type="button" className="danger-link" onClick={() => setShowForgetDialog(true)}>Remove from library</button></div>
                       <p className="preserve-note">Removing an instance keeps its game files, saves, and worlds on disk.</p>
@@ -912,22 +1051,51 @@ function App() {
                   )}
                 </div>
               )}
-              <form className="quick-create" onSubmit={(event) => void createBlankInstance(event)}><div><strong>Need a clean folder?</strong><span>Create an empty instance, then install a version later.</span></div><input value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder="New instance name" aria-label="New instance name" maxLength={48} /><button type="submit" className="secondary-button" disabled={isBusy || !instanceName.trim()}><Plus size={15} /> Create empty</button></form>
+              <form className="quick-create" onSubmit={(event) => void createBlankInstance(event)}><div><strong>Need a clean profile?</strong><span>Create a Java instance or Horizon Rust profile.</span></div><input value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder="New profile name" aria-label="New profile name" maxLength={48} /><select className="field-control quick-create-engine" aria-label="New profile engine" value={newInstanceEngine} onChange={(event) => setNewInstanceEngine(event.target.value as "minecraft" | "horizon")}><option value="minecraft">Minecraft Java</option><option value="horizon">Horizon Rust</option></select><button type="submit" className="secondary-button" disabled={isBusy || !instanceName.trim()}><Plus size={15} /> Create</button></form>
             </>
           ) : activePage === "versions" ? (
-            <VersionsPage versions={officialVersions} loading={versionsLoading} error={versionsError} onRefresh={() => void loadOfficialVersions()} onInstall={chooseRemoteVersion} installing={isInstallingVersion} desktop={desktop} />
+            <VersionsPage versions={officialVersions} loading={versionsLoading} error={versionsError} onRefresh={() => void loadOfficialVersions()} onInstall={chooseRemoteVersion} onCreateHorizon={() => { setNewInstanceEngine("horizon"); setInstanceName("Horizon 26.3"); setShowAddDialog(true); }} installing={isInstallingVersion} desktop={desktop} />
           ) : activePage === "downloads" ? (
             <DownloadsPage progress={downloadProgress} active={isInstallingVersion} onCancel={() => void cancelDownload()} />
           ) : activePage === "accounts" ? (
             <AccountsPage profiles={profiles} selectedProfileId={selectedProfileId} onSelect={(profileId) => setSelectedProfileId(profileId)} onCreate={() => setShowProfileForm(true)} />
           ) : activePage === "mods" ? (
-            <ModsPage desktop={desktop} instances={instances} selectedInstanceId={selectedInstanceId} onSelectInstance={setSelectedInstanceId} curseForgeKey={curseForgeApiKey} onCurseForgeKeyChange={setCurseForgeApiKey} onOpenInstances={() => setActivePage("instances")} />
+            selectedInstance?.engine === "horizon"
+              ? <HorizonModsPage desktop={desktop} instances={instances} selectedInstanceId={selectedInstanceId} onSelectInstance={setSelectedInstanceId} onOpenInstances={() => setActivePage("instances")} />
+              : <ModsPage desktop={desktop} instances={instances} selectedInstanceId={selectedInstanceId} onSelectInstance={setSelectedInstanceId} curseForgeKey={curseForgeApiKey} onCurseForgeKeyChange={setCurseForgeApiKey} onOpenInstances={() => setActivePage("instances")} />
+          ) : activePage === "horizon" ? (
+            <HorizonSettingsPage
+              instances={instances}
+              selectedInstance={selectedInstance}
+              onSelectInstance={setSelectedInstanceId}
+              clientPath={horizonClientPath}
+              onClientPathChange={setHorizonClientPath}
+              onInspectClient={() => void inspectHorizonClient()}
+              clientInfo={horizonClientInfo}
+              inspecting={horizonInspecting}
+              preparerPath={horizonPreparerPath}
+              onPreparerPathChange={setHorizonPreparerPath}
+              prepareJavaPath={horizonPrepareJavaPath}
+              onPrepareJavaPathChange={setHorizonPrepareJavaPath}
+              runtimes={runtimes}
+              onPrepareResources={() => void prepareHorizonResources()}
+              preparing={horizonPreparing}
+              progress={downloadProgress}
+              resourcesPath={horizonResourcesPath}
+              onResourcesPathChange={setHorizonResourcesPath}
+              error={horizonSettingsError}
+              width={selectedHorizonWindow.width}
+              height={selectedHorizonWindow.height}
+              fullscreen={selectedHorizonWindow.fullscreen}
+              onWindowChange={updateHorizonWindowSettings}
+              desktop={desktop}
+            />
           ) : activePage === "settings" ? (
             <SettingsPage
               runtimes={runtimes}
               installations={installations}
               instances={instances}
-              selectedInstance={selectedInstance}
+              selectedInstance={selectedInstance?.engine === "minecraft" ? selectedInstance : null}
               refreshInstallations={refreshInstallations}
               refreshRuntimes={refreshRuntimes}
               addRuntime={addJavaRuntime}
@@ -968,8 +1136,8 @@ function App() {
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAddDialog(false); }}>
           <section className="modal-card add-instance-modal" role="dialog" aria-modal="true" aria-labelledby="add-modal-title">
             <div className="modal-header"><div><p className="eyebrow"><Plus size={14} /> BUILD YOUR LIBRARY</p><h2 id="add-modal-title">Add an instance</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setShowAddDialog(false)}><X size={18} /></button></div>
-            <p className="modal-copy">Each instance has its own game setup and local settings. Create one, then choose its Minecraft version and loader before installing.</p>
-            <form className="new-instance-config-form" onSubmit={(event) => void createBlankInstance(event)}><label className="field-label" htmlFor="new-config-instance-name">New instance name</label><div><input id="new-config-instance-name" className="field-control" value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder="For example, Fabric Survival" maxLength={48} /><button className="play-button" type="submit" disabled={isBusy || !instanceName.trim()}><Wrench size={15} /> Create &amp; configure</button></div><small>Next, choose a Minecraft version and Vanilla, Fabric, or Forge for this instance.</small></form>
+            <p className="modal-copy">Create an isolated Java instance or a separate Rust-powered Horizon profile. Both use the same local test accounts.</p>
+            <form className="new-instance-config-form" onSubmit={(event) => void createBlankInstance(event)}><label className="field-label" htmlFor="new-config-engine">Game engine</label><select id="new-config-engine" className="field-control" value={newInstanceEngine} onChange={(event) => setNewInstanceEngine(event.target.value as "minecraft" | "horizon")}><option value="minecraft">Minecraft Java · standard game</option><option value="horizon">Horizon Rust · Minecraft 26.3</option></select><label className="field-label" htmlFor="new-config-instance-name">Profile name</label><div><input id="new-config-instance-name" className="field-control" value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={newInstanceEngine === "horizon" ? "For example, Horizon 26.3" : "For example, Fabric Survival"} maxLength={48} /><button className="play-button" type="submit" disabled={isBusy || !instanceName.trim()}><Wrench size={15} /> {newInstanceEngine === "horizon" ? "Create Horizon profile" : "Create & configure"}</button></div><small>{newInstanceEngine === "horizon" ? "Horizon uses its own game runtime, settings, content mods, and worlds." : "Choose a Minecraft version and Vanilla, Fabric, or Forge after creating the instance."}</small></form>
             <button className="version-download-callout" type="button" onClick={() => { setShowAddDialog(false); setActivePage("versions"); }} disabled={!desktop}><span className="version-note-icon"><ArrowDownToLine size={17} /></span><span><strong>Install an official version</strong><small>Choose a release, snapshot, or historical version.</small></span><ArrowRight size={17} /></button>
             <div className="modal-section-heading"><span>EXISTING INSTALLATIONS</span><button className="text-link" type="button" onClick={() => void refreshInstallations()}><FolderOpen size={14} /> Rescan</button></div>
             {installations.length > 0 ? <div className="detected-list">{installations.map((installation) => <div className="detected-install" key={installation.root}><div className="detected-root"><HardDrive size={16} /><span title={installation.root}>{installation.root}</span></div><div className="detected-version-list">{installation.versions.slice(0, 6).map((version) => <button className="version-option" key={version.id} type="button" onClick={() => void addDetectedInstallation(installation, version.id)}><span><strong>{version.id}</strong><small>{version.kind}</small></span><Plus size={16} /></button>)}</div></div>)}</div> : <div className="no-detected"><FolderOpen size={19} /><span>No standard installation found. You can still download a version above or inspect a folder below.</span></div>}

@@ -10,11 +10,12 @@ interface VersionsPageProps {
   error: string;
   onRefresh: () => void;
   onInstall: (version: RemoteMinecraftVersion) => void;
+  onCreateHorizon: () => void;
   installing: boolean;
   desktop: boolean;
 }
 
-export function VersionsPage({ versions, loading, error, onRefresh, onInstall, installing, desktop }: VersionsPageProps) {
+export function VersionsPage({ versions, loading, error, onRefresh, onInstall, onCreateHorizon, installing, desktop }: VersionsPageProps) {
   const [filter, setFilter] = useState<VersionFilter>("release");
   const [query, setQuery] = useState("");
   const matchingVersions = useMemo(() => {
@@ -43,6 +44,12 @@ export function VersionsPage({ versions, loading, error, onRefresh, onInstall, i
       </section>
 
       {!desktop && <div className="notice-banner"><ArrowDownToLine size={17} /><span>Open OpnLauncher as a desktop app to browse and install Minecraft versions.</span></div>}
+
+      <section className="horizon-version-card">
+        <span className="version-note-icon"><Layers3 size={18} /></span>
+        <div><p className="eyebrow">SEPARATE RUST GAME ENGINE</p><strong>Minecraft 26.3 · Horizon</strong><small>Create an offline Horizon profile. OpnLauncher can download and prepare the official 26.3 game files for it.</small></div>
+        <button className="secondary-button" type="button" disabled={!desktop || installing} onClick={onCreateHorizon}>Create Horizon profile</button>
+      </section>
 
       <section className="version-manager-panel">
         <div className="version-manager-note">
