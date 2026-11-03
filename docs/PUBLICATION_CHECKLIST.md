@@ -12,13 +12,14 @@ This checklist prepares a public source snapshot. It does not authorize creating
 - [x] Add draft preview notes, contributor guidance, and third-party notices.
 - [x] Add CI, dependency security checks, and a manually started AppImage artifact workflow. None creates a tag or GitHub release.
 - [x] Keep the existing GPL-3.0-or-later license and Mojang/Microsoft independence disclaimer.
+- [x] Inventory declared Rust dependency licenses for Linux, Windows, and macOS in both Cargo lockfiles; no resolved package is missing a license declaration. Review the GPLv3 compatibility notes and preserve the original MPL/CDLA terms.
 - [x] Run a repository-history credential-pattern review and source-level privacy/security review for this preparation.
+- [x] Build the Linux AppImage and inspect its bundled license and attribution resources. It has not been launched from this review environment.
 
 ## Complete before public upload
 
-- [ ] Finish and review the Windows/macOS target-specific Rust license inventory for both Cargo lockfiles; Linux-target metadata is complete, but those target crates are not cached locally.
 - [ ] Run the new workflows on the intended GitHub repository and resolve any failures.
-- [ ] Build and inspect the exact AppImage intended for the preview; verify it starts on the target Linux environment.
+- [ ] Verify that the AppImage starts on the target Linux environment.
 - [ ] Re-run the full secret scan and review the exact commit and complete Git history immediately before upload.
 - [ ] Create the GitHub repository and add a separate `github` remote only after explicit approval. Keep Forgejo as `origin` and the primary development remote.
 - [ ] Enable and verify GitHub private vulnerability reporting before inviting security reports.

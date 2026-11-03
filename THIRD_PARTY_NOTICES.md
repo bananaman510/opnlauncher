@@ -27,7 +27,7 @@ The build-time `caniuse-lite` browser-compatibility dataset by Ben Briggs and co
 
 ## Rust dependencies and review status
 
-The Rust application and Horizon runtime each have a committed `Cargo.lock`. Offline `cargo metadata` returned declared license metadata for every dependency selected for the Linux target: 346 package records for the main application and 302 for the Horizon runtime, with no missing license fields. The inventory includes MIT, Apache-2.0, BSD-2-Clause/3-Clause, ISC, Zlib, BSL-1.0, Unicode-3.0, CC0-1.0, Unlicense, and MPL-2.0 expressions. Keep the original crate license terms available when distributing source or binaries.
+The Rust application and Horizon runtime each have a committed `Cargo.lock`. The resolved dependency graphs were checked for x86_64 Linux, Windows GNU, and macOS using `cargo metadata`. The main application has 346, 307, and 312 resolved package records for those targets; the Horizon runtime has 302, 282, and 288. Every resolved package declares license metadata. The expressions include MIT, Apache-2.0 (including the LLVM exception), BSD-2-Clause/3-Clause, ISC, 0BSD, Zlib, BSL-1.0, Unicode-3.0, CC0-1.0, MIT-0, Unlicense, MPL-2.0, and CDLA-Permissive-2.0. No missing license declarations or non-free license expressions were found in these graphs. The GNU project's license list describes the relevant permissive licenses and the GPLv3 compatibility provisions for MPL 2.0; retain source files under their original notices and terms ([GNU license list](https://www.gnu.org/licenses/license-list.html), [Mozilla MPL FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/)). This is a review of declared dependency terms, not a substitute for legal advice. Windows/macOS builds remain unvalidated.
 
 The Horizon runtime's `webpki-roots` dependency incorporates Mozilla CA root data derived from CCADB under CDLA-Permissive-2.0. The agreement applies to this data and requires its text to be available when sharing it. See the [upstream crate attribution](https://github.com/rustls/webpki-roots) and the [official CDLA text](https://cdla.dev/permissive-2-0/). The full agreement text is reproduced below and this notice is included in the desktop bundle.
 
@@ -56,6 +56,6 @@ This is the Community Data License Agreement â€” Permissive, Version 2.0 (the â€
 
 The official version is available at [cdla.dev/permissive-2-0](https://cdla.dev/permissive-2-0/).
 
-The full offline inventory for Windows and macOS target-specific dependencies remains open because those target crates are not cached locally; complete it before a stable release.
+The Horizon runtime's `webpki-roots` data dependency is covered by the CDLA-Permissive-2.0 notice above. The AppImage build bundles this file and the project GPL license; review the complete binary notice bundle again before distributing a release artifact.
 
 The Horizon vendored dependency notices are not replaced by this summary. Keep their original license files and attribution text whenever updating the Horizon source.

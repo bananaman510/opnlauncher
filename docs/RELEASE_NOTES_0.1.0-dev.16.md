@@ -21,7 +21,7 @@
 - Modpack management, NeoForge and Quilt installation, resource/shader packs, backups, instance import/export, automatic updates, pause/resume, and a complete repair flow are unavailable.
 - Linux is the current development target. Windows/macOS builds and behavior have not been validated.
 - This pre-release has not received a complete security audit. Minecraft mods are third-party executable code; only install content you trust.
-- Linux-target Rust license metadata was reviewed; Windows/macOS target-specific dependency metadata still needs review before a stable release.
+- Declared Rust dependency license metadata was inventoried for Linux, Windows, and macOS; Windows/macOS builds and runtime behavior have not been validated.
 
 ## Privacy and network activity
 
