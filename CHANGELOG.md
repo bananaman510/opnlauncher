@@ -2,6 +2,14 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.6] - Unreleased
+
+### Improved
+
+- Added one-click installation to mod cards. OpnLauncher selects the newest compatible stable build for the active instance's Minecraft version and loader, falling back to a compatible preview if needed.
+- Added per-card version lookup, install progress, and success or error feedback while reusing dependency handling, integrity checks, and no-overwrite safeguards.
+- Added tests for exact Minecraft and loader compatibility plus stable and preview version selection.
+
 ## [0.1.0-dev.5] - Unreleased
 
 ### Improved

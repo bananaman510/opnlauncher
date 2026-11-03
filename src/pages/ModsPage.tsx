@@ -23,6 +23,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { latestCompatibleModVersion } from "../modVersions";
 import type {
   InstalledMod,
   Instance,
@@ -46,6 +47,7 @@ interface ModsPageProps {
 type LibraryTab = "discover" | "installed";
 type ModSort = "relevance" | "downloads" | "updated" | "newest";
 type LoaderFilter = "fabric" | "forge" | "neoforge" | "quilt";
+type CardInstallFeedback = { projectKey: string; instanceId: string; kind: "success" | "error"; message: string };
 
 const loaders: { id: LoaderFilter; name: string }[] = [
   { id: "fabric", name: "Fabric" },
@@ -76,6 +78,10 @@ function versionDate(value: string): string {
   return Number.isNaN(parsed.getTime()) ? value.slice(0, 10) : parsed.toLocaleDateString();
 }
 
+function modProjectKey(project: Pick<ModProject, "provider" | "id">): string {
+  return `${project.provider}:${project.id}`;
+}
+
 export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInstance, curseForgeKey, onCurseForgeKeyChange }: ModsPageProps) {
   const [libraryTab, setLibraryTab] = useState<LibraryTab>("discover");
   const [provider, setProvider] = useState<ModProvider>("modrinth");
@@ -97,6 +103,8 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [isInstalling, setIsInstalling] = useState(false);
+  const [installingProjectKey, setInstallingProjectKey] = useState<string | null>(null);
+  const [cardInstallFeedback, setCardInstallFeedback] = useState<CardInstallFeedback | null>(null);
   const [downloadId, setDownloadId] = useState("");
   const [downloadProgress, setDownloadProgress] = useState<ModDownloadProgress | null>(null);
   const [installError, setInstallError] = useState("");
@@ -107,6 +115,10 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
   const [showKeyInput, setShowKeyInput] = useState(false);
   const [keyDraft, setKeyDraft] = useState(curseForgeKey);
   const activeDownloadId = useRef("");
+  const selectedInstanceIdRef = useRef(selectedInstanceId);
+  const instanceContextRef = useRef(instanceContext);
+  selectedInstanceIdRef.current = selectedInstanceId;
+  instanceContextRef.current = instanceContext;
 
   const selectedVersion = projectVersions.find((version) => version.id === selectedVersionId) ?? projectVersions[0] ?? null;
   const requiredDependencyCount = selectedVersion?.dependencies.filter((dependency) => dependency.dependencyType === "required").length ?? 0;
@@ -124,6 +136,28 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
     && selectedVersion.gameVersions.includes(instanceContext.minecraftVersion)
     && selectedVersion.loaders.includes(instanceContext.loader),
   );
+  const canInstallFromCard = Boolean(
+    desktop
+    && selectedInstanceId
+    && instanceContext?.instanceId === selectedInstanceId
+    && instanceContext.minecraftVersion
+    && instanceContext.loader
+    && instanceContext.loader === loaderFilter
+    && (provider !== "curseforge" || curseForgeKey.trim()),
+  );
+  const cardInstallDisabledReason = !desktop
+    ? "Open the desktop app to install mods."
+    : !selectedInstanceId || instanceContext?.instanceId !== selectedInstanceId
+      ? "Select an instance to install a compatible mod build."
+      : !instanceContext?.minecraftVersion
+        ? "The selected instance needs readable Minecraft version metadata."
+        : !instanceContext.loader
+          ? "Choose an existing Fabric, Forge, NeoForge, or Quilt instance to install mods."
+          : instanceContext.loader !== loaderFilter
+            ? "The selected mod loader does not match this instance."
+            : provider === "curseforge" && !curseForgeKey.trim()
+              ? "Enter a CurseForge API key to install this project."
+              : "";
   const progressPercent = downloadProgress
     ? downloadProgress.totalBytes > 0
       ? Math.min(100, Math.round((downloadProgress.downloadedBytes / downloadProgress.totalBytes) * 100))
@@ -220,6 +254,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
   }
 
   async function openProject(project: ModProject) {
+    if (isInstalling) return;
     setSelectedProject(project);
     setProjectVersions([]);
     setSelectedVersionId("");
@@ -251,6 +286,10 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
 
   async function startInstall() {
     if (!selectedProject || !selectedVersion || !selectedInstanceId || !canInstall || isInstalling) return;
+    const targetInstanceId = selectedInstanceId;
+    const targetProject = selectedProject;
+    const targetVersion = selectedVersion;
+    const targetApiKey = targetProject.provider === "curseforge" ? curseForgeKey || null : null;
     const id = crypto.randomUUID();
     activeDownloadId.current = id;
     setDownloadId(id);
@@ -259,17 +298,20 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
     setInstallError("");
     setConfirmInstall(false);
     try {
-      await invoke<InstalledMod[]>("install_mod_version", {
-        instanceId: selectedInstanceId,
-        provider: selectedProject.provider,
-        projectId: selectedProject.id,
-        versionId: selectedVersion.id,
+      const installed = await invoke<InstalledMod[]>("install_mod_version", {
+        instanceId: targetInstanceId,
+        provider: targetProject.provider,
+        projectId: targetProject.id,
+        versionId: targetVersion.id,
         downloadId: id,
-        apiKey: provider === "curseforge" ? curseForgeKey || null : null,
+        apiKey: targetApiKey,
       });
-      await refreshInstalled();
-      setLibraryTab("installed");
-      setSelectedProject(null);
+      if (selectedInstanceIdRef.current === targetInstanceId) {
+        setInstalledMods(installed);
+        setInstalledError("");
+        setLibraryTab("installed");
+        setSelectedProject(null);
+      }
       setDownloadProgress(null);
     } catch (reason) {
       setInstallError(String(reason));
@@ -277,6 +319,68 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
       activeDownloadId.current = "";
       setDownloadId("");
       setIsInstalling(false);
+    }
+  }
+
+  async function installProjectFromCard(project: ModProject) {
+    const targetInstanceId = selectedInstanceId;
+    const targetContext = instanceContext;
+    const projectKey = modProjectKey(project);
+    if (!canInstallFromCard || !targetInstanceId || !targetContext?.minecraftVersion || !targetContext.loader || isInstalling) return;
+
+    setInstallingProjectKey(projectKey);
+    setCardInstallFeedback(null);
+    setInstallError("");
+    setIsInstalling(true);
+    try {
+      const versions = await invoke<ModVersion[]>("get_mod_project_versions", {
+        provider: project.provider,
+        projectId: project.id,
+        gameVersion: targetContext.minecraftVersion,
+        loader: targetContext.loader,
+        apiKey: project.provider === "curseforge" ? curseForgeKey || null : null,
+      });
+      const version = latestCompatibleModVersion(versions, targetContext.minecraftVersion, targetContext.loader);
+      if (!version) {
+        throw new Error(`No compatible ${loaderName(targetContext.loader)} build was found for Minecraft ${targetContext.minecraftVersion}.`);
+      }
+      if (selectedInstanceIdRef.current !== targetInstanceId || instanceContextRef.current?.instanceId !== targetInstanceId) {
+        throw new Error("The selected instance changed while checking versions. Select the target instance and try again.");
+      }
+
+      const id = crypto.randomUUID();
+      activeDownloadId.current = id;
+      setDownloadId(id);
+      setDownloadProgress({ downloadId: id, projectTitle: project.title, phase: `Installing ${version.versionNumber}`, currentFile: "", completedFiles: 0, totalFiles: 0, downloadedBytes: 0, totalBytes: 0 });
+      const installed = await invoke<InstalledMod[]>("install_mod_version", {
+        instanceId: targetInstanceId,
+        provider: project.provider,
+        projectId: project.id,
+        versionId: version.id,
+        downloadId: id,
+        apiKey: project.provider === "curseforge" ? curseForgeKey || null : null,
+      });
+      if (selectedInstanceIdRef.current === targetInstanceId) {
+        setInstalledMods(installed);
+        setInstalledError("");
+      }
+      setCardInstallFeedback({
+        projectKey,
+        instanceId: targetInstanceId,
+        kind: "success",
+        message: `Installed ${version.versionNumber} for Minecraft ${targetContext.minecraftVersion} · ${loaderName(targetContext.loader)}.`,
+      });
+      setDownloadProgress(null);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setCardInstallFeedback({ projectKey, instanceId: targetInstanceId, kind: "error", message });
+      setInstallError(message);
+      setDownloadProgress(null);
+    } finally {
+      activeDownloadId.current = "";
+      setDownloadId("");
+      setIsInstalling(false);
+      setInstallingProjectKey(null);
     }
   }
 
@@ -380,7 +484,11 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
                 : <>
                   <div className="mod-results-heading"><div><span className="eyebrow">{provider === "modrinth" ? "MODRINTH LIBRARY" : "CURSEFORGE LIBRARY"}</span><strong>{totalHits.toLocaleString()} projects</strong><small>for Minecraft {instanceContext.minecraftVersion} · {loaderName(loaderFilter)}</small></div><button className="text-link" type="button" onClick={() => { restartSearch(); setQuery(""); }}><Clock3 size={14} /> Reset filters</button></div>
                   {isLoading && projects.length === 0 ? <div className="mod-loading-state"><LoaderCircle className="spin" size={23} /><span>Finding matching projects…</span></div>
-                    : filteredProjects.length ? <div className="mod-project-grid">{filteredProjects.map((project) => <article className="mod-project-card" key={`${project.provider}:${project.id}`}>
+                    : filteredProjects.length ? <div className="mod-project-grid">{filteredProjects.map((project) => {
+                      const projectKey = modProjectKey(project);
+                      const feedback = cardInstallFeedback?.projectKey === projectKey && cardInstallFeedback.instanceId === selectedInstanceId ? cardInstallFeedback : null;
+                      const isCardInstalling = installingProjectKey === projectKey && isInstalling;
+                      return <article className="mod-project-card" key={projectKey}>
                       <button type="button" className="mod-card-cover" onClick={() => void openProject(project)} aria-label={`View ${project.title}`}>
                         {project.gallery[0]?.url ? <img className="mod-cover-image" src={project.gallery[0].url} loading="lazy" alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <span className="mod-cover-art"><span /><span /><span />{project.iconUrl && <img className="mod-cover-project-icon" src={project.iconUrl} loading="lazy" alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} />}</span>}
                         <span className="mod-cover-shade" />
@@ -392,8 +500,21 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
                         <p className="mod-card-summary">{project.summary}</p>
                         <div className="mod-card-meta"><span><Download size={13} /> {formatDownloads(project.downloads)}</span><span><Layers3 size={13} /> {project.gameVersions.includes(instanceContext.minecraftVersion ?? "") ? instanceContext.minecraftVersion : "Version match"}</span></div>
                         <div className="mod-card-tags">{project.categories.slice(0, 3).map((tag) => <span key={tag}>{tag.replaceAll("_", " ")}</span>)}</div>
+                        <button
+                          className="play-button mod-card-install"
+                          type="button"
+                          disabled={!canInstallFromCard || isInstalling || feedback?.kind === "success"}
+                          title={feedback?.kind === "success" ? "Installed in this instance." : cardInstallDisabledReason || `Install the latest compatible ${loaderName(instanceContext?.loader)} build for Minecraft ${instanceContext?.minecraftVersion}.`}
+                          aria-label={`Install the latest compatible ${project.title} build`}
+                          onClick={() => void installProjectFromCard(project)}
+                        >
+                          {isCardInstalling ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
+                          {isCardInstalling ? downloadId ? "Installing…" : "Finding build…" : feedback?.kind === "success" ? "Installed" : "Install"}
+                        </button>
+                        {feedback && <p className={`mod-card-install-feedback ${feedback.kind}`} role={feedback.kind === "error" ? "alert" : "status"}>{feedback.message}</p>}
                       </div>
-                    </article>)}</div> : !isLoading && <div className="mod-empty-state compact"><span className="mod-empty-icon"><Search size={21} /></span><strong>No matching projects</strong><span>Try another term or loader filter.</span></div>}
+                    </article>;
+                    })}</div> : !isLoading && <div className="mod-empty-state compact"><span className="mod-empty-icon"><Search size={21} /></span><strong>No matching projects</strong><span>Try another term or loader filter.</span></div>}
                   {isLoading && projects.length > 0 && <div className="mod-fetching-more"><LoaderCircle className="spin" size={16} /> Updating results…</div>}
                   {projects.length < totalHits && !isLoading && <div className="mod-load-more"><button className="secondary-button" type="button" onClick={() => setSearchOffset((current) => current + 24)}><ArrowDownToLine size={15} /> Show more projects</button></div>}
                 </>}
