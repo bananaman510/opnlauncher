@@ -15,3 +15,5 @@ Future features may contact third parties when explicitly used. Microsoft sign-i
 The app data directory contains the SQLite database, launcher logs, generated native libraries, and managed instance directories. A downloaded vanilla version is stored inside its new managed instance directory. Registered external game directories are stored as paths and are not copied or modified by the downloader. Diagnostic exports, when added, must be manual and redact authentication secrets.
 
 Local developer profiles are unverified and are available in development and release builds. Their usernames and stable UUIDs remain in the local database and are not sent to an OpnLauncher service. They do not authenticate with Microsoft or verify game ownership.
+
+The desktop WebView also stores small interface preferences on this device: the selected theme and accent color, favorite instance IDs, and the currently selected instance and local profile. These preferences are not sent to a server. Removing an instance from the launcher also removes its favorite marker; it does not delete its game files or worlds.

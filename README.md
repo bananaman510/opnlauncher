@@ -8,7 +8,8 @@ OpnLauncher is not affiliated with, endorsed by, or associated with Mojang Studi
 
 ## Current features
 
-- Dark desktop interface with Home, Instances, Versions, Mods, Modpacks, Accounts, Downloads, and Settings sections.
+- Responsive desktop interface with an overview, instance library, versions, mods, modpacks, accounts, downloads, and settings.
+- Optional light theme, four accent colors, saved instance favorites, grid or list layouts, recent-instance sorting, and Ctrl/Cmd+K instance search.
 - SQLite storage for local instance metadata and development profiles.
 - Detection of common Minecraft directories and installed version metadata.
 - Manual inspection of another local Minecraft game directory.
@@ -17,6 +18,7 @@ OpnLauncher is not affiliated with, endorsed by, or associated with Mojang Studi
 - Java runtime discovery through `JAVA_HOME`, `PATH`, and common Linux locations.
 - Per-instance Java selection and memory allocation.
 - Visibly unverified local developer profiles with stable offline UUIDs, available in development and release builds.
+- Saved local profile and instance selection for convenient testing between launches.
 - Local launch logs and process exit status.
 - No telemetry, analytics, ads, launcher account, or automatic diagnostic upload.
 
@@ -54,6 +56,8 @@ cargo test --no-default-features --lib --manifest-path src-tauri/Cargo.toml
 ## Local data
 
 The app stores its SQLite database, managed instance directories and downloaded vanilla game files, launch logs, and generated native-library cache in Tauri's application data directory. Registered existing installations continue to point at their existing game directories; downloads go into a separate new instance directory and do not modify those existing files.
+
+Interface preferences, including theme, accent color, instance favorites, and selected instance and local profile, are stored locally in the desktop WebView. They are not uploaded.
 
 ## Development status
 

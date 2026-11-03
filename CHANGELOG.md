@@ -2,6 +2,16 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.3] - Unreleased
+
+### Added
+
+- Rebuilt the desktop interface with a responsive overview, instance library, clearer navigation, and dedicated account and settings pages.
+- Added local theme and accent preferences, instance favorites, recent-instance sorting, grid and list layouts, and a keyboard shortcut for instance search.
+- Added a local profile manager that keeps development profiles clearly marked as unverified and available in release builds.
+- Replaced browser-native instance dialogs with in-app rename, removal, and creation flows.
+- Improved Java runtime selection with readable labels and the executable path shown separately.
+
 ## [0.1.0-dev.2] - Unreleased
 
 ### Added
