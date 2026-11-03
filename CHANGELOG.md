@@ -2,6 +2,14 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.10] - Unreleased
+
+### Fixed
+
+- Reuse a dependency already installed in the selected instance when its provider version supports the active Minecraft version and mod loader and its local file still matches upstream integrity data.
+- Keep installed dependency mappings and files untouched when reusing them; explain when a dependency is disabled, pinned to a different version, incompatible, or no longer matches its provider checksum.
+- Identify older untracked Modrinth dependencies by local SHA-1 lookup when installing a project that requires them.
+
 ## [0.1.0-dev.9] - Unreleased
 
 ### Added

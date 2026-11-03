@@ -141,6 +141,14 @@ struct InstallFile {
     url: String,
     sha1: Option<String>,
     size: Option<u64>,
+    version_pinned: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ModArtifactIntegrity {
+    file_name: String,
+    sha1: Option<String>,
+    size: Option<u64>,
 }
 
 pub type ModProgressSink = Arc<dyn Fn(ModDownloadProgress) + Send + Sync>;
@@ -235,7 +243,7 @@ pub fn install_project_version(
     let game_version = context.minecraft_version.as_deref().ok_or_else(|| LauncherError::Unsupported("the selected instance has no readable Minecraft version metadata".to_owned()))?;
     let loader = context.loader.as_deref().ok_or_else(|| LauncherError::Unsupported("installing mods requires an existing Fabric, Forge, NeoForge, or Quilt instance".to_owned()))?;
     validate_context(game_version, loader)?;
-    let mut files = match provider {
+    let files = match provider {
         "modrinth" => collect_modrinth_install_files(project_id, version_id, game_version, loader)?,
         "curseforge" => collect_curseforge_install_files(project_id, version_id, game_version, loader, api_key)?,
         _ => return Err(LauncherError::InvalidInput("unknown mod provider".to_owned())),
@@ -243,9 +251,11 @@ pub fn install_project_version(
     if files.is_empty() || files.len() > MAX_DEPENDENCIES + 1 {
         return Err(LauncherError::Unsupported("the selected mod has an unsupported dependency count".to_owned()));
     }
-    files.sort_by(|left, right| left.project_id.cmp(&right.project_id));
     let game_dir = canonical_game_directory(&instance)?;
     let mods_dir = ensure_mods_directory(&game_dir)?;
+    let files = reuse_installed_dependencies(database, instance_id, provider, project_id, files, game_version, loader, api_key, &mods_dir)?;
+    let mut files = files;
+    files.sort_by(|left, right| left.project_id.cmp(&right.project_id));
     let sources = install_sources(provider, &files);
     stage_and_install(files, &mods_dir, download_id, &cancelled, progress, None)?;
     database.save_mod_sources(instance_id, &sources)?;
@@ -267,8 +277,9 @@ pub fn resolve_installed_mod_source(
     file_name: &str,
 ) -> Result<Option<ModInstallSource>> {
     validate_mod_file_name(file_name)?;
-    if let Some(source) = database.get_mod_source(instance_id, file_name)? {
-        return Ok(Some(source));
+    let saved_source = database.get_mod_source(instance_id, file_name)?;
+    if saved_source.as_ref().is_some_and(|source| source.version_id.is_some() || source.provider != "modrinth") {
+        return Ok(saved_source);
     }
     let instance = database.get_instance(instance_id)?;
     let game_dir = canonical_game_directory(&instance)?;
@@ -282,20 +293,23 @@ pub fn resolve_installed_mod_source(
         .send()
         .map_err(network_error)?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
+        return Ok(saved_source);
     }
     let version = read_json(response)?;
     let Some(project_id) = version.get("project_id").and_then(Value::as_str) else {
-        return Ok(None);
+        return Ok(saved_source);
     };
     let Some(version_id) = version.get("id").and_then(Value::as_str) else {
-        return Ok(None);
+        return Ok(saved_source);
     };
     validate_project_id("modrinth", project_id)?;
     validate_project_id("modrinth version", version_id)?;
+    if saved_source.as_ref().is_some_and(|source| source.project_id != project_id) {
+        return Ok(saved_source);
+    }
     let project = get_modrinth_project(project_id)?;
     if !project.project_url.as_deref().is_some_and(|url| url.starts_with("https://modrinth.com/mod/")) {
-        return Ok(None);
+        return Ok(saved_source);
     }
     let source = ModInstallSource {
         file_name: file_name.to_owned(),
@@ -366,7 +380,7 @@ pub fn switch_project_version(
     let game_version = context.minecraft_version.as_deref().ok_or_else(|| LauncherError::Unsupported("the selected instance has no readable Minecraft version metadata".to_owned()))?;
     let loader = context.loader.as_deref().ok_or_else(|| LauncherError::Unsupported("installing mods requires a loader-equipped instance".to_owned()))?;
     validate_context(game_version, loader)?;
-    let mut files = match provider {
+    let files = match provider {
         "modrinth" => collect_modrinth_install_files(project_id, version_id, game_version, loader)?,
         "curseforge" => collect_curseforge_install_files(project_id, version_id, game_version, loader, api_key)?,
         _ => return Err(LauncherError::InvalidInput("unknown mod provider".to_owned())),
@@ -374,15 +388,18 @@ pub fn switch_project_version(
     if files.is_empty() || files.len() > MAX_DEPENDENCIES + 1 {
         return Err(LauncherError::Unsupported("the selected mod has an unsupported dependency count".to_owned()));
     }
+    let mut files = files;
     if old_file_name.to_ascii_lowercase().ends_with(".jar.disabled") {
         if let Some(root) = files.iter_mut().find(|file| file.project_id == project_id) {
             root.file_name.push_str(".disabled");
         }
     }
-    files.sort_by(|left, right| left.project_id.cmp(&right.project_id));
-    let sources = install_sources(provider, &files);
     let game_dir = canonical_game_directory(&instance)?;
     let mods_dir = ensure_mods_directory(&game_dir)?;
+    let files = reuse_installed_dependencies(database, instance_id, provider, project_id, files, game_version, loader, api_key, &mods_dir)?;
+    let mut files = files;
+    files.sort_by(|left, right| left.project_id.cmp(&right.project_id));
+    let sources = install_sources(provider, &files);
     stage_and_install(files, &mods_dir, download_id, &cancelled, progress, Some((old_file_name, project_id)))?;
     database.replace_mod_sources(instance_id, old_file_name, &sources)?;
     list_installed_mods(database, instance_id)
@@ -623,7 +640,7 @@ fn collect_modrinth_install_files(project_id: &str, version_id: &str, game_versi
     let root_title = get_modrinth_project(project_id)?.title;
     let mut files = Vec::new();
     let mut visited = BTreeSet::new();
-    collect_modrinth_version(&client, root, Some((project_id, root_title.as_str())), game_version, loader, &mut visited, &mut files, 0)?;
+    collect_modrinth_version(&client, root, Some((project_id, root_title.as_str())), false, game_version, loader, &mut visited, &mut files, 0)?;
     Ok(files)
 }
 
@@ -631,6 +648,7 @@ fn collect_modrinth_version(
     client: &Client,
     version: Value,
     expected_project: Option<(&str, &str)>,
+    version_pinned: bool,
     game_version: &str,
     loader: &str,
     visited: &mut BTreeSet<String>,
@@ -658,7 +676,7 @@ fn collect_modrinth_version(
     let title = if let Some((_, title)) = expected_project { title.to_owned() } else { get_modrinth_project(&project_id)?.title };
     let files_value = version.get("files").and_then(Value::as_array).ok_or_else(|| LauncherError::Unsupported("the selected mod version has no files".to_owned()))?;
     let primary = files_value.iter().find(|file| file.get("primary").and_then(Value::as_bool) == Some(true)).or_else(|| files_value.first()).ok_or_else(|| LauncherError::Unsupported("the selected mod version has no downloadable file".to_owned()))?;
-    files.push(parse_modrinth_install_file(primary, &project_id, &title, &version_id)?);
+    files.push(parse_modrinth_install_file(primary, &project_id, &title, &version_id, version_pinned)?);
 
     let dependencies = version.get("dependencies").and_then(Value::as_array).cloned().unwrap_or_default();
     for dependency in dependencies {
@@ -669,22 +687,23 @@ fn collect_modrinth_version(
             return Err(LauncherError::Unsupported("this mod requires too many other projects".to_owned()));
         }
         let declared_project_id = dependency.get("project_id").and_then(Value::as_str);
-        let dependency_version = if let Some(version_id) = dependency.get("version_id").and_then(Value::as_str) {
+        let (dependency_version, dependency_version_pinned) = if let Some(version_id) = dependency.get("version_id").and_then(Value::as_str) {
             let version = get_modrinth_version(client, version_id)?;
             if declared_project_id.is_some_and(|expected| version.get("project_id").and_then(Value::as_str) != Some(expected)) {
                 return Err(LauncherError::Unsupported("a required dependency version does not match its declared project".to_owned()));
             }
-            version
+            (version, true)
         } else if let Some(dependency_project) = dependency.get("project_id").and_then(Value::as_str) {
             let versions = get_modrinth_project_versions(client, dependency_project, game_version, loader)?;
-            versions.iter().find(|entry| entry.get("version_type").and_then(Value::as_str) == Some("release"))
+            let version = versions.iter().find(|entry| entry.get("version_type").and_then(Value::as_str) == Some("release"))
                 .or_else(|| versions.first())
                 .cloned()
-                .ok_or_else(|| LauncherError::Unsupported(format!("a required dependency ({dependency_project}) has no compatible version")))?
+                .ok_or_else(|| LauncherError::Unsupported(format!("a required dependency ({dependency_project}) has no compatible version")))?;
+            (version, false)
         } else {
             return Err(LauncherError::Unsupported("a required dependency has no downloadable project or version ID; install it manually from its author".to_owned()));
         };
-        collect_modrinth_version(client, dependency_version, None, game_version, loader, visited, files, depth + 1)?;
+        collect_modrinth_version(client, dependency_version, None, dependency_version_pinned, game_version, loader, visited, files, depth + 1)?;
     }
     Ok(())
 }
@@ -711,7 +730,7 @@ fn get_modrinth_project_versions(client: &Client, project_id: &str, game_version
     read_json(response)?.as_array().cloned().ok_or_else(|| LauncherError::Unsupported("Modrinth returned an unexpected dependency response".to_owned()))
 }
 
-fn parse_modrinth_install_file(file: &Value, project_id: &str, title: &str, version_id: &str) -> Result<InstallFile> {
+fn parse_modrinth_install_file(file: &Value, project_id: &str, title: &str, version_id: &str, version_pinned: bool) -> Result<InstallFile> {
     let file_name = file.get("filename").and_then(Value::as_str).ok_or_else(|| LauncherError::Unsupported("a mod file has no filename".to_owned()))?.to_owned();
     validate_mod_file_name(&file_name)?;
     let url = file.get("url").and_then(Value::as_str).ok_or_else(|| LauncherError::Unsupported("a mod file has no download URL".to_owned()))?.to_owned();
@@ -721,7 +740,7 @@ fn parse_modrinth_install_file(file: &Value, project_id: &str, title: &str, vers
     if sha1.as_deref().is_none_or(|hash| !is_sha1(hash)) && size.is_none() {
         return Err(LauncherError::Unsupported("a mod file has no usable integrity metadata".to_owned()));
     }
-    Ok(InstallFile { project_id: project_id.to_owned(), project_title: title.to_owned(), version_id: version_id.to_owned(), file_name, url, sha1, size })
+    Ok(InstallFile { project_id: project_id.to_owned(), project_title: title.to_owned(), version_id: version_id.to_owned(), file_name, url, sha1, size, version_pinned })
 }
 
 fn collect_curseforge_install_files(project_id: &str, file_id: &str, game_version: &str, loader: &str, api_key: Option<&str>) -> Result<Vec<InstallFile>> {
@@ -749,7 +768,7 @@ fn collect_curseforge_install_files(project_id: &str, file_id: &str, game_versio
     if sha1.as_deref().is_none_or(|hash| !is_sha1(hash)) && size.is_none() {
         return Err(LauncherError::Unsupported("the CurseForge file has no usable integrity metadata".to_owned()));
     }
-    let mut files = vec![InstallFile { project_id: project_id.to_owned(), project_title: project.title, version_id: version.id.clone(), file_name, url, sha1, size }];
+    let mut files = vec![InstallFile { project_id: project_id.to_owned(), project_title: project.title, version_id: version.id.clone(), file_name, url, sha1, size, version_pinned: false }];
     let required = version.dependencies.iter().filter(|dependency| dependency.dependency_type == "required").filter_map(|dependency| dependency.project_id.as_deref()).collect::<Vec<_>>();
     if required.len() > MAX_DEPENDENCIES {
         return Err(LauncherError::Unsupported("this mod requires too many other projects".to_owned()));
@@ -775,9 +794,199 @@ fn collect_curseforge_install_files(project_id: &str, file_id: &str, game_versio
         validate_mod_file_name(&dep_file_name)?;
         let dep_sha1 = dependency_file.get("hashes").and_then(Value::as_array).into_iter().flatten().find(|hash| hash.get("algo").and_then(Value::as_u64) == Some(1)).and_then(|hash| hash.get("value")).and_then(Value::as_str).map(str::to_owned);
         let dep_size = dependency_file.get("fileLength").and_then(Value::as_u64);
-        files.push(InstallFile { project_id: dependency_id.to_owned(), project_title: mod_project.title, version_id: dep_id, file_name: dep_file_name, url: dependency_url, sha1: dep_sha1, size: dep_size });
+        files.push(InstallFile { project_id: dependency_id.to_owned(), project_title: mod_project.title, version_id: dep_id, file_name: dep_file_name, url: dependency_url, sha1: dep_sha1, size: dep_size, version_pinned: false });
     }
     Ok(files)
+}
+
+fn reuse_installed_dependencies(
+    database: &Database,
+    instance_id: &str,
+    provider: &str,
+    root_project_id: &str,
+    files: Vec<InstallFile>,
+    game_version: &str,
+    loader: &str,
+    api_key: Option<&str>,
+    mods_dir: &Path,
+) -> Result<Vec<InstallFile>> {
+    let mut installed = list_installed_mods(database, instance_id)?;
+
+    // Older installs may not have provider metadata yet. For Modrinth projects,
+    // use its documented hash lookup only for local files that look like one of
+    // the dependencies being installed.
+    if provider == "modrinth" {
+        for existing in installed.iter_mut().filter(|item| {
+            item.source.as_ref().is_none_or(|source| source.provider == "modrinth" && source.version_id.is_none())
+        }) {
+            let relevant = files.iter().any(|file| {
+                file.project_id != root_project_id
+                    && (normalized_mod_name(&file.project_title) == normalized_mod_name(&existing.name)
+                        || file.file_name.eq_ignore_ascii_case(mod_jar_name(&existing.file_name)))
+            });
+            if relevant {
+                existing.source = resolve_installed_mod_source(database, instance_id, &existing.file_name)?;
+            }
+        }
+    }
+
+    let mut reused_project_ids = BTreeSet::new();
+    for file in &files {
+        if file.project_id == root_project_id {
+            continue;
+        }
+        let matches_dependency = |item: &&InstalledMod| item.source.as_ref().is_some_and(|source| source.provider == provider && source.project_id == file.project_id);
+        let Some(existing) = installed.iter().find(|item| item.enabled && matches_dependency(item)).or_else(|| installed.iter().find(|item| matches_dependency(item))) else {
+            continue;
+        };
+
+        let Some(source) = existing.source.as_ref() else {
+            continue;
+        };
+        let Some(version_id) = source.version_id.as_deref() else {
+            return Err(LauncherError::Unsupported(format!(
+                "OpnLauncher cannot verify the installed {} dependency version; identify or remove it, then try again",
+                existing.name
+            )));
+        };
+        let (compatible, artifacts) = installed_source_artifacts(source, version_id, game_version, loader, api_key)?;
+        if !compatible {
+            return Err(LauncherError::Unsupported(format!(
+                "the installed {} version does not support Minecraft {} with {}; switch or remove it before installing this mod",
+                existing.name, game_version, loader
+            )));
+        }
+        let existing_path = mods_dir.join(&existing.file_name);
+        ensure_regular_file(&existing_path)?;
+        let verified = artifacts.iter().try_fold(false, |matched, artifact| {
+            if matched { Ok(true) } else { artifact_matches_file(artifact, &existing_path, &existing.file_name) }
+        })?;
+        if can_reuse_dependency(file, source, &existing.name, existing.enabled, compatible, verified)? {
+            reused_project_ids.insert(file.project_id.clone());
+        }
+    }
+    Ok(filter_reused_dependencies(files, root_project_id, &reused_project_ids))
+}
+
+fn installed_source_artifacts(
+    source: &ModInstallSource,
+    version_id: &str,
+    game_version: &str,
+    loader: &str,
+    api_key: Option<&str>,
+) -> Result<(bool, Vec<ModArtifactIntegrity>)> {
+    match source.provider.as_str() {
+        "modrinth" => {
+            let client = api_client(false)?;
+            let version = get_modrinth_version(&client, version_id)?;
+            if version.get("project_id").and_then(Value::as_str) != Some(source.project_id.as_str()) {
+                return Ok((false, Vec::new()));
+            }
+            let compatible = version.get("game_versions").and_then(Value::as_array)
+                .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(game_version)))
+                && version.get("loaders").and_then(Value::as_array)
+                    .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(loader)));
+            let artifacts = version.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(|file| {
+                Some(ModArtifactIntegrity {
+                    file_name: file.get("filename")?.as_str()?.to_owned(),
+                    sha1: file.pointer("hashes.sha1").and_then(Value::as_str).map(str::to_owned),
+                    size: file.get("size").and_then(Value::as_u64),
+                })
+            }).collect();
+            Ok((compatible, artifacts))
+        }
+        "curseforge" => {
+            let api_key = validate_curseforge_key(api_key)?;
+            let project_id = validate_curseforge_id(&source.project_id)?;
+            let file_id = validate_curseforge_id(version_id)?;
+            let client = api_client(true)?;
+            let body = read_json(client.get(format!("{CURSEFORGE_API}/mods/{project_id}/files/{file_id}"))
+                .header("x-api-key", api_key).send().map_err(network_error)?)?;
+            let file = body.get("data").ok_or_else(|| LauncherError::Unsupported("CurseForge returned an unexpected installed dependency response".to_owned()))?;
+            let game_versions = string_list(file.get("gameVersions"));
+            let compatible = game_versions.iter().any(|version| version == game_version)
+                && game_versions.iter().any(|version| curseforge_loader_name(version) == Some(loader));
+            let artifacts = file.get("fileName").and_then(Value::as_str).map(|file_name| {
+                let sha1 = file.get("hashes").and_then(Value::as_array).into_iter().flatten()
+                    .find(|hash| hash.get("algo").and_then(Value::as_u64) == Some(1))
+                    .and_then(|hash| hash.get("value")).and_then(Value::as_str).map(str::to_owned);
+                vec![ModArtifactIntegrity { file_name: file_name.to_owned(), sha1, size: file.get("fileLength").and_then(Value::as_u64) }]
+            }).unwrap_or_default();
+            Ok((compatible, artifacts))
+        }
+        _ => Ok((false, Vec::new())),
+    }
+}
+
+fn artifact_matches_file(artifact: &ModArtifactIntegrity, path: &Path, installed_name: &str) -> Result<bool> {
+    let installed_name = mod_jar_name(installed_name);
+    if !artifact.file_name.eq_ignore_ascii_case(installed_name) {
+        return Ok(false);
+    }
+    if artifact.sha1.as_deref().is_none_or(|hash| !is_sha1(hash)) && artifact.size.is_none() {
+        return Ok(false);
+    }
+    let metadata = fs::metadata(path)?;
+    if artifact.size.is_some_and(|expected| metadata.len() != expected) {
+        return Ok(false);
+    }
+    if let Some(expected) = artifact.sha1.as_deref().filter(|hash| is_sha1(hash)) {
+        if !sha1_file(path)?.eq_ignore_ascii_case(expected) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn mod_jar_name(file_name: &str) -> &str {
+    if file_name.to_ascii_lowercase().ends_with(".jar.disabled") {
+        &file_name[..file_name.len() - ".disabled".len()]
+    } else {
+        file_name
+    }
+}
+
+fn normalized_mod_name(value: &str) -> String {
+    value.chars().filter(char::is_ascii_alphanumeric).flat_map(char::to_lowercase).collect()
+}
+
+fn filter_reused_dependencies(files: Vec<InstallFile>, root_project_id: &str, reused_project_ids: &BTreeSet<String>) -> Vec<InstallFile> {
+    files.into_iter().filter(|file| file.project_id == root_project_id || !reused_project_ids.contains(&file.project_id)).collect()
+}
+
+fn can_reuse_dependency(
+    file: &InstallFile,
+    source: &ModInstallSource,
+    installed_name: &str,
+    enabled: bool,
+    compatible: bool,
+    integrity_verified: bool,
+) -> Result<bool> {
+    if !enabled {
+        return Err(LauncherError::Unsupported(format!(
+            "{} is required by this mod but is disabled in this instance; enable it and try again",
+            installed_name
+        )));
+    }
+    if file.version_pinned && source.version_id.as_deref() != Some(file.version_id.as_str()) {
+        return Err(LauncherError::Unsupported(format!(
+            "{} requires a specific version of {}, but a different version is already installed; switch or remove the installed dependency first",
+            file.project_title, installed_name
+        )));
+    }
+    if !compatible {
+        return Err(LauncherError::Unsupported(format!(
+            "the installed {} version does not support this instance's Minecraft version and mod loader; switch or remove it before installing this mod",
+            installed_name
+        )));
+    }
+    if !integrity_verified {
+        return Err(LauncherError::Unsupported(format!(
+            "the installed {} file no longer matches its provider's integrity data; reinstall or remove it before installing this mod",
+            installed_name
+        )));
+    }
+    Ok(true)
 }
 
 fn stage_and_install(
@@ -1551,6 +1760,78 @@ mod tests {
     }
 
     #[test]
+    fn compatible_verified_dependencies_are_reused_but_conflicts_are_not() {
+        let mut dependency = InstallFile {
+            project_id: "sodium".to_owned(),
+            project_title: "Sodium".to_owned(),
+            version_id: "selected-version".to_owned(),
+            file_name: "sodium-fabric.jar".to_owned(),
+            url: "https://cdn.modrinth.com/data/sodium.jar".to_owned(),
+            sha1: Some("a".repeat(40)),
+            size: Some(10),
+            version_pinned: false,
+        };
+        let installed_source = ModInstallSource {
+            file_name: "sodium-fabric-old.jar".to_owned(),
+            provider: "modrinth".to_owned(),
+            project_id: "sodium".to_owned(),
+            version_id: Some("compatible-old-version".to_owned()),
+        };
+
+        assert!(can_reuse_dependency(&dependency, &installed_source, "Sodium", true, true, true).unwrap());
+        assert!(can_reuse_dependency(&dependency, &installed_source, "Sodium", true, false, true).is_err());
+        assert!(can_reuse_dependency(&dependency, &installed_source, "Sodium", true, true, false).is_err());
+        assert!(can_reuse_dependency(&dependency, &installed_source, "Sodium", false, true, true).is_err());
+
+        dependency.version_pinned = true;
+        assert!(can_reuse_dependency(&dependency, &installed_source, "Sodium", true, true, true).is_err());
+        dependency.version_id = "compatible-old-version".to_owned();
+        assert!(can_reuse_dependency(&dependency, &installed_source, "Sodium", true, true, true).unwrap());
+    }
+
+    #[test]
+    fn reused_dependency_filter_keeps_the_requested_mod() {
+        let install_file = |project_id: &str| InstallFile {
+            project_id: project_id.to_owned(),
+            project_title: project_id.to_owned(),
+            version_id: "version".to_owned(),
+            file_name: format!("{project_id}.jar"),
+            url: format!("https://cdn.modrinth.com/data/{project_id}.jar"),
+            sha1: Some("a".repeat(40)),
+            size: Some(10),
+            version_pinned: false,
+        };
+        let files = vec![install_file("iris"), install_file("sodium")];
+        let reused = BTreeSet::from(["sodium".to_owned()]);
+
+        let pending = filter_reused_dependencies(files, "iris", &reused);
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].project_id, "iris");
+    }
+
+    #[test]
+    fn disabled_filename_artifact_verification_strips_state_suffix() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("opnlauncher-mod-dependency-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("sodium-fabric.jar.disabled");
+        let bytes = b"verified sodium artifact";
+        fs::write(&path, bytes).unwrap();
+        let artifact = ModArtifactIntegrity {
+            file_name: "sodium-fabric.jar".to_owned(),
+            sha1: Some(format!("{:x}", Sha1::digest(bytes))),
+            size: Some(bytes.len() as u64),
+        };
+
+        assert!(artifact_matches_file(&artifact, &path, "sodium-fabric.jar.disabled").unwrap());
+        fs::write(&path, b"altered sodium artifact").unwrap();
+        assert!(!artifact_matches_file(&artifact, &path, "sodium-fabric.jar.disabled").unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn switching_to_a_new_filename_removes_the_previous_root_file() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
@@ -1570,6 +1851,7 @@ mod tests {
             url: "https://cdn.modrinth.com/data/sodium.jar".to_owned(),
             sha1: Some(sha1),
             size: Some(new_bytes.len() as u64),
+            version_pinned: false,
         }];
         let cancelled = Arc::new(AtomicBool::new(false));
         let progress: ModProgressSink = Arc::new(|_| {});
