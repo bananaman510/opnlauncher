@@ -154,11 +154,19 @@ export interface ModInstanceContext {
   sharedGameDirectory: boolean;
 }
 
+export interface ModInstallSource {
+  fileName: string;
+  provider: ModProvider;
+  projectId: string;
+  versionId: string | null;
+}
+
 export interface InstalledMod {
   fileName: string;
   name: string;
   version: string | null;
   modId: string | null;
+  source: ModInstallSource | null;
   enabled: boolean;
   size: number;
 }

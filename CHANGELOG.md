@@ -2,6 +2,20 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.9] - Unreleased
+
+### Added
+
+- Added per-mod version switching with searchable releases, Minecraft version and loader filters, release-type filters, sorting, compatibility checks, checksum-verified downloads, and a confirmation step.
+- Added multi-select, select-all, delete-selected, and delete-all controls for the selected instance's mod files, each with an explicit confirmation.
+- Disabled Discover and project-detail install buttons for projects already detected in the selected instance.
+- Saved provider project and version references for installed mods so later version changes can resolve the correct project.
+
+### Fixed
+
+- Fixed version switching when the provider changes a mod's JAR filename: the new file is staged and verified before the previous file is moved aside, and the previous file is restored if installation fails.
+- Improved recognition of pre-existing mods so duplicate installs are less likely when their filenames include a loader and version suffix.
+
 ## [0.1.0-dev.8] - Unreleased
 
 ### Added

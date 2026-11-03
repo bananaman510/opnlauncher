@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -14,7 +14,7 @@ use sha1::{Digest, Sha1};
 use uuid::Uuid;
 use zip::ZipArchive;
 
-use crate::database::Database;
+use crate::database::{Database, ModInstallSource};
 use crate::error::{LauncherError, Result};
 use crate::minecraft::is_safe_id;
 use crate::models::Instance;
@@ -114,6 +114,7 @@ pub struct InstalledMod {
     pub name: String,
     pub version: Option<String>,
     pub mod_id: Option<String>,
+    pub source: Option<ModInstallSource>,
     pub enabled: bool,
     pub size: u64,
 }
@@ -135,6 +136,7 @@ pub struct ModDownloadProgress {
 struct InstallFile {
     project_id: String,
     project_title: String,
+    version_id: String,
     file_name: String,
     url: String,
     sha1: Option<String>,
@@ -188,6 +190,30 @@ pub fn get_project_versions(
     }
 }
 
+pub fn get_all_project_versions(provider: &str, project_id: &str, api_key: Option<&str>) -> Result<Vec<ModVersion>> {
+    validate_project_id(provider, project_id)?;
+    match provider {
+        "modrinth" => {
+            let client = api_client(false)?;
+            let response = get_with_query(
+                &client,
+                &format!("{MODRINTH_API}/project/{project_id}/version"),
+                &[("include_changelog", "false".to_owned())],
+            )?
+            .send()
+            .map_err(network_error)?;
+            let body = read_json(response)?;
+            let items = body.as_array().ok_or_else(|| LauncherError::Unsupported("Modrinth returned an unexpected version response".to_owned()))?;
+            if items.len() > 2_000 {
+                return Err(LauncherError::Unsupported("Modrinth returned too many project versions".to_owned()));
+            }
+            Ok(items.iter().filter_map(|item| parse_modrinth_version(item, project_id)).collect())
+        }
+        "curseforge" => get_all_curseforge_versions(project_id, api_key),
+        _ => Err(LauncherError::InvalidInput("unknown mod provider".to_owned())),
+    }
+}
+
 pub fn install_project_version(
     database: &Database,
     instance_id: &str,
@@ -220,8 +246,173 @@ pub fn install_project_version(
     files.sort_by(|left, right| left.project_id.cmp(&right.project_id));
     let game_dir = canonical_game_directory(&instance)?;
     let mods_dir = ensure_mods_directory(&game_dir)?;
-    stage_and_install(files, &mods_dir, download_id, &cancelled, progress)?;
+    let sources = install_sources(provider, &files);
+    stage_and_install(files, &mods_dir, download_id, &cancelled, progress, None)?;
+    database.save_mod_sources(instance_id, &sources)?;
     list_installed_mods(database, instance_id)
+}
+
+fn install_sources(provider: &str, files: &[InstallFile]) -> Vec<ModInstallSource> {
+    files.iter().map(|file| ModInstallSource {
+        file_name: file.file_name.clone(),
+        provider: provider.to_owned(),
+        project_id: file.project_id.clone(),
+        version_id: Some(file.version_id.clone()),
+    }).collect()
+}
+
+pub fn resolve_installed_mod_source(
+    database: &Database,
+    instance_id: &str,
+    file_name: &str,
+) -> Result<Option<ModInstallSource>> {
+    validate_mod_file_name(file_name)?;
+    if let Some(source) = database.get_mod_source(instance_id, file_name)? {
+        return Ok(Some(source));
+    }
+    let instance = database.get_instance(instance_id)?;
+    let game_dir = canonical_game_directory(&instance)?;
+    let mods_dir = game_dir.join("mods");
+    let path = mods_dir.join(file_name);
+    ensure_regular_file(&path)?;
+    let hash = sha1_file(&path)?;
+    let client = api_client(false)?;
+    let url = format!("{MODRINTH_API}/version_file/{hash}");
+    let response = get_with_query(&client, &url, &[("algorithm", "sha1".to_owned())])?
+        .send()
+        .map_err(network_error)?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let version = read_json(response)?;
+    let Some(project_id) = version.get("project_id").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let Some(version_id) = version.get("id").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    validate_project_id("modrinth", project_id)?;
+    validate_project_id("modrinth version", version_id)?;
+    let project = get_modrinth_project(project_id)?;
+    if !project.project_url.as_deref().is_some_and(|url| url.starts_with("https://modrinth.com/mod/")) {
+        return Ok(None);
+    }
+    let source = ModInstallSource {
+        file_name: file_name.to_owned(),
+        provider: "modrinth".to_owned(),
+        project_id: project_id.to_owned(),
+        version_id: Some(version_id.to_owned()),
+    };
+    database.save_mod_sources(instance_id, std::slice::from_ref(&source))?;
+    Ok(Some(source))
+}
+
+pub fn link_installed_mod_to_project(
+    database: &Database,
+    instance_id: &str,
+    file_name: &str,
+    provider: &str,
+    project_id: &str,
+    api_key: Option<&str>,
+) -> Result<ModInstallSource> {
+    validate_mod_file_name(file_name)?;
+    validate_project_id(provider, project_id)?;
+    let instance = database.get_instance(instance_id)?;
+    let game_dir = canonical_game_directory(&instance)?;
+    let mods_dir = game_dir.join("mods");
+    ensure_regular_file(&mods_dir.join(file_name))?;
+    let project = get_project(provider, project_id, api_key)?;
+    if provider == "modrinth"
+        && !project.project_url.as_deref().is_some_and(|url| url.starts_with("https://modrinth.com/mod/"))
+    {
+        return Err(LauncherError::InvalidInput("choose a Modrinth mod project".to_owned()));
+    }
+    let source = ModInstallSource {
+        file_name: file_name.to_owned(),
+        provider: provider.to_owned(),
+        project_id: project.id,
+        version_id: None,
+    };
+    database.save_mod_sources(instance_id, std::slice::from_ref(&source))?;
+    Ok(source)
+}
+
+pub fn switch_project_version(
+    database: &Database,
+    instance_id: &str,
+    old_file_name: &str,
+    provider: &str,
+    project_id: &str,
+    version_id: &str,
+    api_key: Option<&str>,
+    download_id: &str,
+    cancelled: Arc<AtomicBool>,
+    progress: ModProgressSink,
+) -> Result<Vec<InstalledMod>> {
+    validate_mod_file_name(old_file_name)?;
+    validate_project_id(provider, project_id)?;
+    validate_project_id(provider, version_id)?;
+    Uuid::parse_str(download_id).map_err(|_| LauncherError::InvalidInput("download identifier is invalid".to_owned()))?;
+    let source = database.get_mod_source(instance_id, old_file_name)?
+        .ok_or_else(|| LauncherError::Unsupported("identify this installed mod's provider project before switching versions".to_owned()))?;
+    if source.provider != provider || source.project_id != project_id {
+        return Err(LauncherError::InvalidInput("the selected project does not match this installed mod".to_owned()));
+    }
+    if source.version_id.as_deref() == Some(version_id) {
+        return list_installed_mods(database, instance_id);
+    }
+    let instance = database.get_instance(instance_id)?;
+    let context = inspect_instance(database, instance_id)?;
+    let game_version = context.minecraft_version.as_deref().ok_or_else(|| LauncherError::Unsupported("the selected instance has no readable Minecraft version metadata".to_owned()))?;
+    let loader = context.loader.as_deref().ok_or_else(|| LauncherError::Unsupported("installing mods requires a loader-equipped instance".to_owned()))?;
+    validate_context(game_version, loader)?;
+    let mut files = match provider {
+        "modrinth" => collect_modrinth_install_files(project_id, version_id, game_version, loader)?,
+        "curseforge" => collect_curseforge_install_files(project_id, version_id, game_version, loader, api_key)?,
+        _ => return Err(LauncherError::InvalidInput("unknown mod provider".to_owned())),
+    };
+    if files.is_empty() || files.len() > MAX_DEPENDENCIES + 1 {
+        return Err(LauncherError::Unsupported("the selected mod has an unsupported dependency count".to_owned()));
+    }
+    if old_file_name.to_ascii_lowercase().ends_with(".jar.disabled") {
+        if let Some(root) = files.iter_mut().find(|file| file.project_id == project_id) {
+            root.file_name.push_str(".disabled");
+        }
+    }
+    files.sort_by(|left, right| left.project_id.cmp(&right.project_id));
+    let sources = install_sources(provider, &files);
+    let game_dir = canonical_game_directory(&instance)?;
+    let mods_dir = ensure_mods_directory(&game_dir)?;
+    stage_and_install(files, &mods_dir, download_id, &cancelled, progress, Some((old_file_name, project_id)))?;
+    database.replace_mod_sources(instance_id, old_file_name, &sources)?;
+    list_installed_mods(database, instance_id)
+}
+
+pub fn remove_mod_files(database: &Database, instance_id: &str, file_names: &[String], confirmed: bool) -> Result<()> {
+    if !confirmed {
+        return Err(LauncherError::InvalidInput("confirm removal before deleting mod files".to_owned()));
+    }
+    if file_names.is_empty() || file_names.len() > 512 {
+        return Err(LauncherError::InvalidInput("select between 1 and 512 mod files to remove".to_owned()));
+    }
+    let mut unique = BTreeSet::new();
+    for file_name in file_names {
+        validate_mod_file_name(file_name)?;
+        if !unique.insert(file_name) {
+            return Err(LauncherError::InvalidInput("a mod file was selected more than once".to_owned()));
+        }
+    }
+    let instance = database.get_instance(instance_id)?;
+    let game_dir = canonical_game_directory(&instance)?;
+    let mods_dir = ensure_mods_directory(&game_dir)?;
+    for file_name in file_names {
+        ensure_regular_file(&mods_dir.join(file_name))?;
+    }
+    for file_name in file_names {
+        fs::remove_file(mods_dir.join(file_name))?;
+    }
+    database.remove_mod_sources(instance_id, file_names)?;
+    Ok(())
 }
 
 pub fn inspect_instance(database: &Database, instance_id: &str) -> Result<ModInstanceContext> {
@@ -280,6 +471,7 @@ pub fn list_installed_mods(database: &Database, instance_id: &str) -> Result<Vec
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(LauncherError::Unsupported("the instance mods path is not a regular directory".to_owned()));
     }
+    let sources = database.list_mod_sources(instance_id)?.into_iter().map(|source| (source.file_name.clone(), source)).collect::<HashMap<_, _>>();
     let mut installed = Vec::new();
     for entry in fs::read_dir(&mods_dir)? {
         let entry = entry?;
@@ -295,11 +487,13 @@ pub fn list_installed_mods(database: &Database, instance_id: &str) -> Result<Vec
         }
         let file_metadata = entry.metadata()?;
         let (name, version, mod_id) = read_jar_identity(&entry.path(), &file_name);
+        let source = sources.get(&file_name).cloned();
         installed.push(InstalledMod {
             file_name,
             name,
             version,
             mod_id,
+            source,
             enabled,
             size: file_metadata.len(),
         });
@@ -328,23 +522,25 @@ pub fn set_mod_enabled(database: &Database, instance_id: &str, file_name: &str, 
         if !lower_name.ends_with(".jar") {
             return Err(LauncherError::InvalidInput("only enabled .jar files can be disabled".to_owned()));
         }
-        return move_mod_file(&source, &mods_dir.join(format!("{file_name}.disabled")));
+        let destination_name = format!("{file_name}.disabled");
+        move_mod_file(&source, &mods_dir.join(&destination_name))?;
+        if let Err(error) = database.rename_mod_source(instance_id, file_name, &destination_name) {
+            let _ = fs::rename(mods_dir.join(&destination_name), &source);
+            return Err(error);
+        }
+        return Ok(());
     };
-    move_mod_file(&source, &mods_dir.join(destination_name))
+    let destination = mods_dir.join(destination_name);
+    move_mod_file(&source, &destination)?;
+    if let Err(error) = database.rename_mod_source(instance_id, file_name, destination_name) {
+        let _ = fs::rename(&destination, &source);
+        return Err(error);
+    }
+    Ok(())
 }
 
 pub fn remove_mod(database: &Database, instance_id: &str, file_name: &str, confirmed: bool) -> Result<()> {
-    if !confirmed {
-        return Err(LauncherError::InvalidInput("confirm removal before deleting a mod file".to_owned()));
-    }
-    validate_mod_file_name(file_name)?;
-    let instance = database.get_instance(instance_id)?;
-    let game_dir = canonical_game_directory(&instance)?;
-    let mods_dir = ensure_mods_directory(&game_dir)?;
-    let path = mods_dir.join(file_name);
-    ensure_regular_file(&path)?;
-    fs::remove_file(path)?;
-    Ok(())
+    remove_mod_files(database, instance_id, &[file_name.to_owned()], confirmed)
 }
 
 fn search_modrinth(query: &str, game_version: &str, loader: &str, sort: &str, offset: u32) -> Result<ModSearchResult> {
@@ -450,6 +646,7 @@ fn collect_modrinth_version(
         return Err(LauncherError::Unsupported("a selected mod version does not match this instance's Minecraft version and loader".to_owned()));
     }
     let project_id = version.get("project_id").and_then(Value::as_str).ok_or_else(|| LauncherError::Unsupported("a mod version has no project identifier".to_owned()))?.to_owned();
+    let version_id = version.get("id").and_then(Value::as_str).ok_or_else(|| LauncherError::Unsupported("a mod version has no version identifier".to_owned()))?.to_owned();
     if let Some((expected_id, _)) = expected_project {
         if project_id != expected_id {
             return Err(LauncherError::InvalidInput("selected version does not belong to the selected project".to_owned()));
@@ -461,7 +658,7 @@ fn collect_modrinth_version(
     let title = if let Some((_, title)) = expected_project { title.to_owned() } else { get_modrinth_project(&project_id)?.title };
     let files_value = version.get("files").and_then(Value::as_array).ok_or_else(|| LauncherError::Unsupported("the selected mod version has no files".to_owned()))?;
     let primary = files_value.iter().find(|file| file.get("primary").and_then(Value::as_bool) == Some(true)).or_else(|| files_value.first()).ok_or_else(|| LauncherError::Unsupported("the selected mod version has no downloadable file".to_owned()))?;
-    files.push(parse_modrinth_install_file(primary, &project_id, &title)?);
+    files.push(parse_modrinth_install_file(primary, &project_id, &title, &version_id)?);
 
     let dependencies = version.get("dependencies").and_then(Value::as_array).cloned().unwrap_or_default();
     for dependency in dependencies {
@@ -514,7 +711,7 @@ fn get_modrinth_project_versions(client: &Client, project_id: &str, game_version
     read_json(response)?.as_array().cloned().ok_or_else(|| LauncherError::Unsupported("Modrinth returned an unexpected dependency response".to_owned()))
 }
 
-fn parse_modrinth_install_file(file: &Value, project_id: &str, title: &str) -> Result<InstallFile> {
+fn parse_modrinth_install_file(file: &Value, project_id: &str, title: &str, version_id: &str) -> Result<InstallFile> {
     let file_name = file.get("filename").and_then(Value::as_str).ok_or_else(|| LauncherError::Unsupported("a mod file has no filename".to_owned()))?.to_owned();
     validate_mod_file_name(&file_name)?;
     let url = file.get("url").and_then(Value::as_str).ok_or_else(|| LauncherError::Unsupported("a mod file has no download URL".to_owned()))?.to_owned();
@@ -524,7 +721,7 @@ fn parse_modrinth_install_file(file: &Value, project_id: &str, title: &str) -> R
     if sha1.as_deref().is_none_or(|hash| !is_sha1(hash)) && size.is_none() {
         return Err(LauncherError::Unsupported("a mod file has no usable integrity metadata".to_owned()));
     }
-    Ok(InstallFile { project_id: project_id.to_owned(), project_title: title.to_owned(), file_name, url, sha1, size })
+    Ok(InstallFile { project_id: project_id.to_owned(), project_title: title.to_owned(), version_id: version_id.to_owned(), file_name, url, sha1, size })
 }
 
 fn collect_curseforge_install_files(project_id: &str, file_id: &str, game_version: &str, loader: &str, api_key: Option<&str>) -> Result<Vec<InstallFile>> {
@@ -552,7 +749,7 @@ fn collect_curseforge_install_files(project_id: &str, file_id: &str, game_versio
     if sha1.as_deref().is_none_or(|hash| !is_sha1(hash)) && size.is_none() {
         return Err(LauncherError::Unsupported("the CurseForge file has no usable integrity metadata".to_owned()));
     }
-    let mut files = vec![InstallFile { project_id: project_id.to_owned(), project_title: project.title, file_name, url, sha1, size }];
+    let mut files = vec![InstallFile { project_id: project_id.to_owned(), project_title: project.title, version_id: version.id.clone(), file_name, url, sha1, size }];
     let required = version.dependencies.iter().filter(|dependency| dependency.dependency_type == "required").filter_map(|dependency| dependency.project_id.as_deref()).collect::<Vec<_>>();
     if required.len() > MAX_DEPENDENCIES {
         return Err(LauncherError::Unsupported("this mod requires too many other projects".to_owned()));
@@ -578,19 +775,33 @@ fn collect_curseforge_install_files(project_id: &str, file_id: &str, game_versio
         validate_mod_file_name(&dep_file_name)?;
         let dep_sha1 = dependency_file.get("hashes").and_then(Value::as_array).into_iter().flatten().find(|hash| hash.get("algo").and_then(Value::as_u64) == Some(1)).and_then(|hash| hash.get("value")).and_then(Value::as_str).map(str::to_owned);
         let dep_size = dependency_file.get("fileLength").and_then(Value::as_u64);
-        files.push(InstallFile { project_id: dependency_id.to_owned(), project_title: mod_project.title, file_name: dep_file_name, url: dependency_url, sha1: dep_sha1, size: dep_size });
+        files.push(InstallFile { project_id: dependency_id.to_owned(), project_title: mod_project.title, version_id: dep_id, file_name: dep_file_name, url: dependency_url, sha1: dep_sha1, size: dep_size });
     }
     Ok(files)
 }
 
-fn stage_and_install(files: Vec<InstallFile>, mods_dir: &Path, download_id: &str, cancelled: &Arc<AtomicBool>, progress: ModProgressSink) -> Result<()> {
+fn stage_and_install(
+    files: Vec<InstallFile>,
+    mods_dir: &Path,
+    download_id: &str,
+    cancelled: &Arc<AtomicBool>,
+    progress: ModProgressSink,
+    replacement: Option<(&str, &str)>,
+) -> Result<()> {
     let total_files = u32::try_from(files.len()).map_err(|_| LauncherError::Unsupported("too many mod files".to_owned()))?;
     let total_bytes = files.iter().try_fold(0_u64, |sum, file| sum.checked_add(file.size.unwrap_or(0)).filter(|sum| *sum <= MAX_INSTALL_SIZE))
         .ok_or_else(|| LauncherError::Unsupported("required mod files exceed the 2 GiB install limit".to_owned()))?;
     let primary_title = files.first().map(|file| file.project_title.clone()).unwrap_or_else(|| "Mod".to_owned());
     let staging_dir = mods_dir.join(format!(".opnlauncher-staging-{download_id}"));
+    let replacement_path = replacement.map(|(file_name, _)| mods_dir.join(file_name));
+    if let (Some((file_name, _)), Some(path)) = (replacement, replacement_path.as_deref()) {
+        validate_mod_file_name(file_name)?;
+        ensure_regular_file(path)?;
+    }
     fs::create_dir(&staging_dir)?;
     let mut staged = Vec::new();
+    let backup_path = staging_dir.join(".previous-mod-file");
+    let mut preserve_replacement = false;
     let result = (|| {
         let mut downloaded = 0_u64;
         for (index, file) in files.iter().enumerate() {
@@ -599,19 +810,30 @@ fn stage_and_install(files: Vec<InstallFile>, mods_dir: &Path, download_id: &str
             }
             validate_mod_file_name(&file.file_name)?;
             let destination = mods_dir.join(&file.file_name);
+            let is_replacement_root = replacement.is_some_and(|(_, project_id)| file.project_id == project_id);
+            let is_original_file = replacement.is_some_and(|(file_name, _)| file_name == file.file_name);
             if path_exists_no_follow(&destination)? {
                 ensure_regular_file(&destination)?;
                 if file.sha1.as_deref().is_some_and(|expected| sha1_file(&destination).is_ok_and(|actual| actual.eq_ignore_ascii_case(expected))) {
+                    if is_replacement_root && is_original_file {
+                        preserve_replacement = true;
+                    }
                     downloaded = downloaded.saturating_add(file.size.unwrap_or(fs::metadata(&destination)?.len()));
                     progress(ModDownloadProgress { download_id: download_id.to_owned(), project_title: file.project_title.clone(), phase: "Already installed".to_owned(), current_file: file.file_name.clone(), completed_files: index as u32 + 1, total_files, downloaded_bytes: downloaded, total_bytes });
                     continue;
                 }
-                return Err(LauncherError::Unsupported(format!("{} already exists in this instance's mods folder; remove or disable it before replacing it", file.file_name)));
+                if is_replacement_root && is_original_file {
+                    // The old file is moved aside only after every new artifact has been downloaded and verified.
+                } else {
+                    return Err(LauncherError::Unsupported(format!("{} already exists in this instance's mods folder; remove or disable it before replacing it", file.file_name)));
+                }
             }
-            let disabled_copy = mods_dir.join(format!("{}.disabled", file.file_name));
-            if path_exists_no_follow(&disabled_copy)? {
-                ensure_regular_file(&disabled_copy)?;
-                return Err(LauncherError::Unsupported(format!("{} is already present but disabled; re-enable or remove it before installing another copy", file.file_name)));
+            if let Some(alternate_name) = alternate_mod_state_name(&file.file_name) {
+                let alternate = mods_dir.join(&alternate_name);
+                if path_exists_no_follow(&alternate)? {
+                    ensure_regular_file(&alternate)?;
+                    return Err(LauncherError::Unsupported(format!("{} is already present in this instance's mods folder; re-enable or remove it before installing another copy", alternate_name)));
+                }
             }
             let temp_file = staging_dir.join(&file.file_name);
             progress(ModDownloadProgress { download_id: download_id.to_owned(), project_title: file.project_title.clone(), phase: "Downloading mod files".to_owned(), current_file: file.file_name.clone(), completed_files: index as u32, total_files, downloaded_bytes: downloaded, total_bytes });
@@ -619,14 +841,39 @@ fn stage_and_install(files: Vec<InstallFile>, mods_dir: &Path, download_id: &str
             downloaded = downloaded.saturating_add(actual_size);
             staged.push((temp_file, destination, file.file_name.clone()));
         }
+
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(LauncherError::Unsupported("mod installation cancelled".to_owned()));
+        }
+        let mut replacement_backed_up = false;
+        if !preserve_replacement {
+            if let Some(original) = replacement_path.as_deref() {
+                fs::rename(original, &backup_path)?;
+                replacement_backed_up = true;
+            }
+        }
         let mut installed: Vec<PathBuf> = Vec::new();
         for (source, destination, file_name) in &staged {
             if cancelled.load(Ordering::Relaxed) {
                 for moved in installed.iter().rev() { let _ = fs::remove_file(moved); }
+                if replacement_backed_up {
+                    if let Some(original) = replacement_path.as_deref() {
+                        if let Err(error) = fs::rename(&backup_path, original) {
+                            return Err(LauncherError::Unsupported(format!("installation was cancelled and the old mod could not be restored ({error}); it remains in {}", backup_path.display())));
+                        }
+                    }
+                }
                 return Err(LauncherError::Unsupported("mod installation cancelled".to_owned()));
             }
             if let Err(error) = fs::hard_link(source, destination) {
                 for moved in installed.iter().rev() { let _ = fs::remove_file(moved); }
+                if replacement_backed_up {
+                    if let Some(original) = replacement_path.as_deref() {
+                        if let Err(restore_error) = fs::rename(&backup_path, original) {
+                            return Err(LauncherError::Unsupported(format!("installation failed and the old mod could not be restored ({restore_error}); it remains in {}", backup_path.display())));
+                        }
+                    }
+                }
                 if error.kind() == std::io::ErrorKind::AlreadyExists {
                     return Err(LauncherError::Unsupported(format!("{} appeared during installation; no files were replaced", file_name)));
                 }
@@ -635,13 +882,33 @@ fn stage_and_install(files: Vec<InstallFile>, mods_dir: &Path, download_id: &str
             installed.push(destination.clone());
             if let Err(error) = fs::remove_file(source) {
                 for moved in installed.iter().rev() { let _ = fs::remove_file(moved); }
+                if replacement_backed_up {
+                    if let Some(original) = replacement_path.as_deref() {
+                        if let Err(restore_error) = fs::rename(&backup_path, original) {
+                            return Err(LauncherError::Unsupported(format!("installation failed and the old mod could not be restored ({restore_error}); it remains in {}", backup_path.display())));
+                        }
+                    }
+                }
+                return Err(error.into());
+            }
+        }
+        if replacement_backed_up {
+            if let Err(error) = fs::remove_file(&backup_path) {
+                for moved in installed.iter().rev() { let _ = fs::remove_file(moved); }
+                if let Some(original) = replacement_path.as_deref() {
+                    if let Err(restore_error) = fs::rename(&backup_path, original) {
+                        return Err(LauncherError::Unsupported(format!("installation failed and the old mod could not be restored ({restore_error}); it remains in {}", backup_path.display())));
+                    }
+                }
                 return Err(error.into());
             }
         }
         progress(ModDownloadProgress { download_id: download_id.to_owned(), project_title: primary_title, phase: "Installation complete".to_owned(), current_file: String::new(), completed_files: total_files, total_files, downloaded_bytes: downloaded, total_bytes });
         Ok(())
     })();
-    let _ = fs::remove_dir_all(&staging_dir);
+    if !backup_path.exists() {
+        let _ = fs::remove_dir_all(&staging_dir);
+    }
     result
 }
 
@@ -782,6 +1049,33 @@ fn get_curseforge_versions(project_id: &str, game_version: &str, loader: &str, a
     Ok(versions)
 }
 
+fn get_all_curseforge_versions(project_id: &str, api_key: Option<&str>) -> Result<Vec<ModVersion>> {
+    let api_key = validate_curseforge_key(api_key)?;
+    let id = validate_curseforge_id(project_id)?;
+    let client = api_client(true)?;
+    const PAGE_SIZE: u32 = 50;
+    const MAX_PAGES: u32 = 10;
+    let mut versions = Vec::new();
+    for page in 0..MAX_PAGES {
+        let index = page * PAGE_SIZE;
+        let request = get_with_query(
+            &client,
+            &format!("{CURSEFORGE_API}/mods/{id}/files"),
+            &[("pageSize", PAGE_SIZE.to_string()), ("index", index.to_string())],
+        )?
+        .header("x-api-key", api_key);
+        let body = read_json(request.send().map_err(network_error)?)?;
+        let files = body.get("data").and_then(Value::as_array).ok_or_else(|| LauncherError::Unsupported("CurseForge returned an unexpected version response".to_owned()))?;
+        let count = files.len();
+        versions.extend(files.iter().filter_map(|file| parse_curseforge_version(file, project_id, "", "")));
+        let total = body.pointer("pagination.totalCount").and_then(Value::as_u64).unwrap_or(0);
+        if count < PAGE_SIZE as usize || (total > 0 && u64::from(index) + count as u64 >= total) {
+            break;
+        }
+    }
+    Ok(versions)
+}
+
 fn parse_modrinth_project(value: &Value, default_type: &str) -> Option<ModProject> {
     let id = value.get("project_id").or_else(|| value.get("id"))?.as_str()?.to_owned();
     let title = value.get("title")?.as_str()?.to_owned();
@@ -874,11 +1168,20 @@ fn parse_curseforge_project(value: &Value) -> Option<ModProject> {
 
 fn parse_curseforge_version(value: &Value, project_id: &str, game_version: &str, loader: &str) -> Option<ModVersion> {
     let id = value.get("id")?.as_u64()?.to_string();
-    let compatible_versions = string_list(value.get("gameVersions"));
-    let compatible = compatible_versions.iter().any(|version| version == game_version);
+    let provider_versions = string_list(value.get("gameVersions"));
+    let compatible = provider_versions.iter().any(|version| version == game_version);
     if !game_version.is_empty() && !compatible {
         return None;
     }
+    let loaders = if loader.is_empty() {
+        provider_versions.iter().filter_map(|version| curseforge_loader_name(version).map(str::to_owned)).collect::<Vec<_>>()
+    } else {
+        vec![loader.to_owned()]
+    };
+    if !loader.is_empty() && !loaders.iter().any(|available| available == loader) {
+        return None;
+    }
+    let compatible_versions = provider_versions.into_iter().filter(|version| curseforge_loader_name(version).is_none()).collect();
     let file_name = value.get("fileName").and_then(Value::as_str)?.to_owned();
     let size = value.get("fileLength").and_then(Value::as_u64);
     let sha1 = value.get("hashes").and_then(Value::as_array).into_iter().flatten().find(|hash| hash.get("algo").and_then(Value::as_u64) == Some(1)).and_then(|hash| hash.get("value")).and_then(Value::as_str).map(str::to_owned);
@@ -900,7 +1203,7 @@ fn parse_curseforge_version(value: &Value, project_id: &str, game_version: &str,
         release_type: match value.get("releaseType").and_then(Value::as_u64).unwrap_or(1) { 3 => "alpha", 2 => "beta", _ => "release" }.to_owned(),
         date_published: value.get("fileDate").and_then(Value::as_str).unwrap_or("").to_owned(),
         game_versions: compatible_versions,
-        loaders: vec![loader.to_owned()],
+        loaders,
         files: vec![ModVersionFile { name: file_name, size, sha1 }],
         dependencies,
         changelog: None,
@@ -942,6 +1245,16 @@ fn validate_curseforge_key(api_key: Option<&str>) -> Result<&str> {
 
 fn curseforge_loader_id(loader: &str) -> Option<u8> {
     match loader { "forge" => Some(1), "fabric" => Some(4), "quilt" => Some(5), "neoforge" => Some(6), _ => None }
+}
+
+fn curseforge_loader_name(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fabric" => Some("fabric"),
+        "forge" => Some("forge"),
+        "quilt" => Some("quilt"),
+        "neoforge" => Some("neoforge"),
+        _ => None,
+    }
 }
 
 fn api_client(curseforge: bool) -> Result<Client> {
@@ -1105,6 +1418,17 @@ fn ensure_regular_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn alternate_mod_state_name(file_name: &str) -> Option<String> {
+    let lower_name = file_name.to_ascii_lowercase();
+    if lower_name.ends_with(".jar.disabled") {
+        Some(file_name[..file_name.len() - ".disabled".len()].to_owned())
+    } else if lower_name.ends_with(".jar") {
+        Some(format!("{file_name}.disabled"))
+    } else {
+        None
+    }
+}
+
 fn move_mod_file(source: &Path, destination: &Path) -> Result<()> {
     if path_exists_no_follow(destination)? {
         return Err(LauncherError::Unsupported("a mod file with that name already exists".to_owned()));
@@ -1224,5 +1548,69 @@ mod tests {
             &[("query", "sodium + lithium".to_owned()), ("offset", "24".to_owned())],
         ).unwrap().build().unwrap();
         assert_eq!(request.url().query(), Some("query=sodium+%2B+lithium&offset=24"));
+    }
+
+    #[test]
+    fn switching_to_a_new_filename_removes_the_previous_root_file() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("opnlauncher-mod-switch-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let old_path = root.join("old-sodium.jar");
+        let new_path = root.join("sodium-fabric-new.jar");
+        fs::write(&old_path, b"old mod bytes").unwrap();
+        let new_bytes = b"verified replacement bytes";
+        fs::write(&new_path, new_bytes).unwrap();
+        let sha1 = format!("{:x}", Sha1::digest(new_bytes));
+        let files = vec![InstallFile {
+            project_id: "sodium".to_owned(),
+            project_title: "Sodium".to_owned(),
+            version_id: "new-version".to_owned(),
+            file_name: "sodium-fabric-new.jar".to_owned(),
+            url: "https://cdn.modrinth.com/data/sodium.jar".to_owned(),
+            sha1: Some(sha1),
+            size: Some(new_bytes.len() as u64),
+        }];
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let progress: ModProgressSink = Arc::new(|_| {});
+
+        stage_and_install(files, &root, &Uuid::new_v4().to_string(), &cancelled, progress, Some(("old-sodium.jar", "sodium"))).unwrap();
+
+        assert!(!old_path.exists());
+        assert_eq!(fs::read(&new_path).unwrap(), new_bytes);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn detects_enabled_and_disabled_mod_filename_pairs() {
+        assert_eq!(alternate_mod_state_name("example.jar").as_deref(), Some("example.jar.disabled"));
+        assert_eq!(alternate_mod_state_name("example.jar.disabled").as_deref(), Some("example.jar"));
+    }
+
+    #[test]
+    fn batch_removal_deletes_only_the_confirmed_selected_mod_files() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("opnlauncher-mod-delete-{}", Uuid::new_v4()));
+        let game_dir = root.join("game");
+        let mods_dir = game_dir.join("mods");
+        fs::create_dir_all(&mods_dir).unwrap();
+        let selected = ["selected-one.jar", "selected-two.jar"];
+        for file_name in selected.iter().chain(["keep.jar", "notes.txt"].iter()) {
+            fs::write(mods_dir.join(file_name), b"test file").unwrap();
+        }
+        let database = Database::in_memory().unwrap();
+        let instance = database.create_instance("Removal test", game_dir.to_str().unwrap(), None).unwrap();
+
+        assert!(remove_mod_files(&database, &instance.id, &[selected[0].to_owned()], false).is_err());
+        assert!(mods_dir.join(selected[0]).exists());
+        remove_mod_files(&database, &instance.id, &selected.map(str::to_owned), true).unwrap();
+
+        assert!(!mods_dir.join(selected[0]).exists());
+        assert!(!mods_dir.join(selected[1]).exists());
+        assert!(mods_dir.join("keep.jar").exists());
+        assert!(mods_dir.join("notes.txt").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }

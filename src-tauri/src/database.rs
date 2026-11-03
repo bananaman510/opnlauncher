@@ -13,6 +13,15 @@ pub struct Database {
     connection: Mutex<Connection>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModInstallSource {
+    pub file_name: String,
+    pub provider: String,
+    pub project_id: String,
+    pub version_id: Option<String>,
+}
+
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -48,6 +57,14 @@ impl Database {
              CREATE TABLE IF NOT EXISTS settings (
                  key TEXT PRIMARY KEY NOT NULL,
                  value TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS installed_mod_sources (
+                 instance_id TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+                 file_name TEXT NOT NULL,
+                 provider TEXT NOT NULL,
+                 project_id TEXT NOT NULL,
+                 version_id TEXT,
+                 PRIMARY KEY (instance_id, file_name)
              );",
         )?;
         Ok(Self {
@@ -200,6 +217,123 @@ impl Database {
         if changed == 0 {
             return Err(LauncherError::NotFound(format!("instance {id}")));
         }
+        Ok(())
+    }
+
+    pub fn list_mod_sources(&self, instance_id: &str) -> Result<Vec<ModInstallSource>> {
+        let connection = self.connection.lock().map_err(|_| {
+            LauncherError::Unsupported("database lock was poisoned".to_owned())
+        })?;
+        let mut statement = connection.prepare(
+            "SELECT file_name, provider, project_id, version_id
+             FROM installed_mod_sources WHERE instance_id = ?1",
+        )?;
+        let rows = statement.query_map([instance_id], |row| {
+            Ok(ModInstallSource {
+                file_name: row.get(0)?,
+                provider: row.get(1)?,
+                project_id: row.get(2)?,
+                version_id: row.get(3)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn get_mod_source(&self, instance_id: &str, file_name: &str) -> Result<Option<ModInstallSource>> {
+        let connection = self.connection.lock().map_err(|_| {
+            LauncherError::Unsupported("database lock was poisoned".to_owned())
+        })?;
+        connection
+            .query_row(
+                "SELECT file_name, provider, project_id, version_id
+                 FROM installed_mod_sources WHERE instance_id = ?1 AND file_name = ?2",
+                params![instance_id, file_name],
+                |row| {
+                    Ok(ModInstallSource {
+                        file_name: row.get(0)?,
+                        provider: row.get(1)?,
+                        project_id: row.get(2)?,
+                        version_id: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn save_mod_sources(&self, instance_id: &str, sources: &[ModInstallSource]) -> Result<()> {
+        let mut connection = self.connection.lock().map_err(|_| {
+            LauncherError::Unsupported("database lock was poisoned".to_owned())
+        })?;
+        let transaction = connection.transaction()?;
+        for source in sources {
+            transaction.execute(
+                "INSERT INTO installed_mod_sources (instance_id, file_name, provider, project_id, version_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(instance_id, file_name) DO UPDATE SET
+                    provider = excluded.provider,
+                    project_id = excluded.project_id,
+                    version_id = excluded.version_id",
+                params![instance_id, source.file_name, source.provider, source.project_id, source.version_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn replace_mod_sources(
+        &self,
+        instance_id: &str,
+        old_file_name: &str,
+        sources: &[ModInstallSource],
+    ) -> Result<()> {
+        let mut connection = self.connection.lock().map_err(|_| {
+            LauncherError::Unsupported("database lock was poisoned".to_owned())
+        })?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM installed_mod_sources WHERE instance_id = ?1 AND file_name = ?2",
+            params![instance_id, old_file_name],
+        )?;
+        for source in sources {
+            transaction.execute(
+                "INSERT INTO installed_mod_sources (instance_id, file_name, provider, project_id, version_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(instance_id, file_name) DO UPDATE SET
+                    provider = excluded.provider,
+                    project_id = excluded.project_id,
+                    version_id = excluded.version_id",
+                params![instance_id, source.file_name, source.provider, source.project_id, source.version_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn rename_mod_source(&self, instance_id: &str, old_file_name: &str, new_file_name: &str) -> Result<()> {
+        let connection = self.connection.lock().map_err(|_| {
+            LauncherError::Unsupported("database lock was poisoned".to_owned())
+        })?;
+        connection.execute(
+            "UPDATE installed_mod_sources SET file_name = ?1 WHERE instance_id = ?2 AND file_name = ?3",
+            params![new_file_name, instance_id, old_file_name],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_mod_sources(&self, instance_id: &str, file_names: &[String]) -> Result<()> {
+        let mut connection = self.connection.lock().map_err(|_| {
+            LauncherError::Unsupported("database lock was poisoned".to_owned())
+        })?;
+        let transaction = connection.transaction()?;
+        for file_name in file_names {
+            transaction.execute(
+                "DELETE FROM installed_mod_sources WHERE instance_id = ?1 AND file_name = ?2",
+                params![instance_id, file_name],
+            )?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -402,5 +536,33 @@ mod tests {
     fn rejects_invalid_profile_names() {
         assert!(validate_offline_name("player name").is_err());
         assert!(validate_offline_name("x".repeat(17).as_str()).is_err());
+    }
+
+    #[test]
+    fn keeps_mod_provider_records_in_sync_with_file_changes() {
+        let db = Database::in_memory().unwrap();
+        let instance = db.create_instance("Mod test", "/project/game", Some("fabric-test")).unwrap();
+        let source = ModInstallSource {
+            file_name: "example.jar".to_owned(),
+            provider: "modrinth".to_owned(),
+            project_id: "example-project".to_owned(),
+            version_id: Some("example-version".to_owned()),
+        };
+
+        db.save_mod_sources(&instance.id, std::slice::from_ref(&source)).unwrap();
+        assert_eq!(db.get_mod_source(&instance.id, "example.jar").unwrap(), Some(source.clone()));
+        db.rename_mod_source(&instance.id, "example.jar", "example.jar.disabled").unwrap();
+        assert_eq!(db.get_mod_source(&instance.id, "example.jar").unwrap(), None);
+        assert_eq!(db.get_mod_source(&instance.id, "example.jar.disabled").unwrap().unwrap().version_id.as_deref(), Some("example-version"));
+        let replacement = ModInstallSource {
+            file_name: "example-new.jar".to_owned(),
+            version_id: Some("new-version".to_owned()),
+            ..source
+        };
+        db.replace_mod_sources(&instance.id, "example.jar.disabled", std::slice::from_ref(&replacement)).unwrap();
+        assert_eq!(db.get_mod_source(&instance.id, "example.jar.disabled").unwrap(), None);
+        assert_eq!(db.get_mod_source(&instance.id, "example-new.jar").unwrap(), Some(replacement));
+        db.remove_mod_sources(&instance.id, &["example-new.jar".to_owned()]).unwrap();
+        assert!(db.list_mod_sources(&instance.id).unwrap().is_empty());
     }
 }

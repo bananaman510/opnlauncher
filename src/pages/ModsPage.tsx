@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   ArrowDownToLine,
+  ArrowDownUp,
   ArrowUpRight,
   Boxes,
   Check,
@@ -23,10 +24,12 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { latestCompatibleModVersion } from "../modVersions";
+import { latestCompatibleModVersion, matchingInstalledMod } from "../modVersions";
+import { ModVersionSwitchDialog } from "./ModVersionSwitchDialog";
 import type {
   InstalledMod,
   Instance,
+  ModInstallSource,
   ModDownloadProgress,
   ModInstanceContext,
   ModProject,
@@ -111,6 +114,12 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
   const [installError, setInstallError] = useState("");
   const [confirmInstall, setConfirmInstall] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<InstalledMod | null>(null);
+  const [switchTarget, setSwitchTarget] = useState<InstalledMod | null>(null);
+  const [selectedModFiles, setSelectedModFiles] = useState<string[]>([]);
+  const [bulkRemoveTarget, setBulkRemoveTarget] = useState<string[] | null>(null);
+  const [bulkRemoveError, setBulkRemoveError] = useState("");
+  const [isRemovingMods, setIsRemovingMods] = useState(false);
+  const [isSwitchingVersion, setIsSwitchingVersion] = useState(false);
   const [busyFile, setBusyFile] = useState("");
   const [imageIndex, setImageIndex] = useState(0);
   const [showKeyInput, setShowKeyInput] = useState(false);
@@ -123,6 +132,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
 
   const selectedVersion = projectVersions.find((version) => version.id === selectedVersionId) ?? projectVersions[0] ?? null;
   const requiredDependencyCount = selectedVersion?.dependencies.filter((dependency) => dependency.dependencyType === "required").length ?? 0;
+  const selectedProjectIsInstalled = Boolean(selectedProject && matchingInstalledMod(selectedProject, installedMods));
   const categories = useMemo(() => [...new Set(projects.flatMap((project) => project.categories))].slice(0, 12), [projects]);
   const [categoryFilter, setCategoryFilter] = useState("");
   const filteredProjects = useMemo(() => categoryFilter ? projects.filter((project) => project.categories.includes(categoryFilter)) : projects, [categoryFilter, projects]);
@@ -135,7 +145,8 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
     && instanceContext.loader
     && instanceContext.loader === loaderFilter
     && selectedVersion.gameVersions.includes(instanceContext.minecraftVersion)
-    && selectedVersion.loaders.includes(instanceContext.loader),
+    && selectedVersion.loaders.includes(instanceContext.loader)
+    && !selectedProjectIsInstalled,
   );
   const canInstallFromCard = Boolean(
     desktop
@@ -174,10 +185,16 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
     if (!desktop || !selectedInstanceId) {
       setInstanceContext(null);
       setInstalledMods([]);
+      setSelectedModFiles([]);
+      setSwitchTarget(null);
+      setRemoveTarget(null);
+      setBulkRemoveTarget(null);
+      setBulkRemoveError("");
       return;
     }
     let cancelled = false;
     setInstanceContext(null);
+    setSelectedModFiles([]);
     setInstalledError("");
     void Promise.all([
       invoke<ModInstanceContext>("inspect_instance_mod_context", { instanceId: selectedInstanceId }),
@@ -242,7 +259,9 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
   async function refreshInstalled() {
     if (!desktop || !selectedInstanceId) return;
     try {
-      setInstalledMods(await invoke<InstalledMod[]>("list_installed_mods", { instanceId: selectedInstanceId }));
+      const installed = await invoke<InstalledMod[]>("list_installed_mods", { instanceId: selectedInstanceId });
+      setInstalledMods(installed);
+      setSelectedModFiles((current) => current.filter((fileName) => installed.some((mod) => mod.fileName === fileName)));
       setInstalledError("");
     } catch (reason) {
       setInstalledError(String(reason));
@@ -417,6 +436,72 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
     }
   }
 
+  function toggleModSelection(fileName: string) {
+    setSelectedModFiles((current) => current.includes(fileName)
+      ? current.filter((selected) => selected !== fileName)
+      : [...current, fileName]);
+  }
+
+  function toggleAllModSelection() {
+    setSelectedModFiles((current) => current.length === installedMods.length
+      ? []
+      : installedMods.map((mod) => mod.fileName));
+  }
+
+  async function removeBulkTarget() {
+    if (!selectedInstanceId || !bulkRemoveTarget?.length || isRemovingMods) return;
+    setIsRemovingMods(true);
+    try {
+      await invoke("remove_mod_files", { instanceId: selectedInstanceId, fileNames: bulkRemoveTarget, confirmed: true });
+      setBulkRemoveTarget(null);
+      setSelectedModFiles([]);
+      await refreshInstalled();
+    } catch (reason) {
+      const message = String(reason);
+      setInstalledError(message);
+      setBulkRemoveError(message);
+    } finally {
+      setIsRemovingMods(false);
+    }
+  }
+
+  async function switchInstalledModVersion(mod: InstalledMod, source: ModInstallSource, version: ModVersion) {
+    if (!selectedInstanceId || !source || isSwitchingVersion) return;
+    const targetInstanceId = selectedInstanceId;
+    const id = crypto.randomUUID();
+    activeDownloadId.current = id;
+    setDownloadId(id);
+    setDownloadProgress({ downloadId: id, projectTitle: mod.name, phase: `Switching to ${version.versionNumber}`, currentFile: "", completedFiles: 0, totalFiles: 0, downloadedBytes: 0, totalBytes: 0 });
+    setIsSwitchingVersion(true);
+    setInstallError("");
+    try {
+      const installed = await invoke<InstalledMod[]>("switch_mod_version", {
+        instanceId: targetInstanceId,
+        oldFileName: mod.fileName,
+        provider: source.provider,
+        projectId: source.projectId,
+        versionId: version.id,
+        downloadId: id,
+        apiKey: source.provider === "curseforge" ? curseForgeKey || null : null,
+      });
+      if (selectedInstanceIdRef.current === targetInstanceId) {
+        setInstalledMods(installed);
+        setInstalledError("");
+        setSelectedModFiles((current) => current.filter((fileName) => fileName !== mod.fileName));
+      }
+      setDownloadProgress(null);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setInstallError(message);
+      setDownloadProgress(null);
+      throw reason;
+    } finally {
+      activeDownloadId.current = "";
+      setDownloadId("");
+      setIsSwitchingVersion(false);
+    }
+  }
+
   const showingCurseForgeKeyPrompt = provider === "curseforge" && curseForgeKey.trim().length === 0;
 
   return (
@@ -488,6 +573,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
                     : filteredProjects.length ? <div className="mod-project-grid">{filteredProjects.map((project) => {
                       const projectKey = modProjectKey(project);
                       const feedback = cardInstallFeedback?.projectKey === projectKey && cardInstallFeedback.instanceId === selectedInstanceId ? cardInstallFeedback : null;
+                      const installedMatch = matchingInstalledMod(project, installedMods);
                       const isCardInstalling = installingProjectKey === projectKey && isInstalling;
                       return <article className="mod-project-card" key={projectKey}>
                       <button type="button" className="mod-card-cover" onClick={() => void openProject(project)} aria-label={`View ${project.title}`}>
@@ -504,13 +590,13 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
                         <button
                           className="play-button mod-card-install"
                           type="button"
-                          disabled={!canInstallFromCard || isInstalling || feedback?.kind === "success"}
-                          title={feedback?.kind === "success" ? "Installed in this instance." : cardInstallDisabledReason || `Install the latest compatible ${loaderName(instanceContext?.loader)} build for Minecraft ${instanceContext?.minecraftVersion}.`}
-                          aria-label={`Install the latest compatible ${project.title} build`}
+                          disabled={!canInstallFromCard || isInstalling || Boolean(installedMatch) || feedback?.kind === "success"}
+                          title={installedMatch ? `Already installed as ${installedMatch.fileName}.` : feedback?.kind === "success" ? "Installed in this instance." : cardInstallDisabledReason || `Install the latest compatible ${loaderName(instanceContext?.loader)} build for Minecraft ${instanceContext?.minecraftVersion}.`}
+                          aria-label={installedMatch ? `${project.title} is already installed` : `Install the latest compatible ${project.title} build`}
                           onClick={() => void installProjectFromCard(project)}
                         >
-                          {isCardInstalling ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
-                          {isCardInstalling ? downloadId ? "Installing…" : "Finding build…" : feedback?.kind === "success" ? "Installed" : "Install"}
+                          {isCardInstalling ? <LoaderCircle className="spin" size={15} /> : installedMatch || feedback?.kind === "success" ? <Check size={15} /> : <Download size={15} />}
+                          {isCardInstalling ? downloadId ? "Installing…" : "Finding build…" : installedMatch || feedback?.kind === "success" ? "Installed" : "Install"}
                         </button>
                         {feedback && <p className={`mod-card-install-feedback ${feedback.kind}`} role={feedback.kind === "error" ? "alert" : "status"}>{feedback.message}</p>}
                       </div>
@@ -522,17 +608,22 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
           </>
         ) : (
           <div className="installed-mods-panel">
-            <div className="installed-mods-heading"><div><span className="eyebrow">INSTANCE CONTENT</span><h2>{installedMods.length} installed mod{installedMods.length === 1 ? "" : "s"}</h2><p>Manage JAR files in this instance's mods folder.</p></div><button className="secondary-button" type="button" onClick={() => void refreshInstalled()} disabled={!desktop}><ArrowDownToLine size={15} /> Rescan folder</button></div>
+            <div className="installed-mods-heading"><div><span className="eyebrow">INSTANCE CONTENT</span><h2>{installedMods.length} installed mod{installedMods.length === 1 ? "" : "s"}</h2><p>Manage JAR files in this instance's mods folder.</p></div><div className="installed-mods-tools"><button className="secondary-button" type="button" onClick={() => void refreshInstalled()} disabled={!desktop}><ArrowDownToLine size={15} /> Rescan folder</button>{installedMods.length > 0 && <><button className="secondary-button" type="button" onClick={toggleAllModSelection}>{selectedModFiles.length === installedMods.length ? "Clear selection" : "Select all"}</button><button className="danger-button" type="button" onClick={() => { setBulkRemoveError(""); setBulkRemoveTarget(installedMods.map((mod) => mod.fileName)); }}><Trash2 size={14} /> Delete all</button></>}</div></div>
             {!desktop ? <div className="mod-empty-state compact"><span>Open the desktop app to read local files.</span></div>
               : installedError ? <div className="error-banner mod-error" role="alert"><CircleAlert size={16} />{installedError}</div>
                 : installedMods.length === 0 ? <div className="mod-empty-state"><span className="mod-empty-icon"><PackageCheck size={22} /></span><strong>No mod files here yet</strong><span>Pick a modded instance and install a compatible project from Discover.</span><button className="secondary-button" type="button" onClick={() => setLibraryTab("discover")}><Search size={15} /> Browse mods</button></div>
-                  : <div className="installed-mod-list">{installedMods.map((mod) => <article className={`installed-mod-row ${mod.enabled ? "" : "is-disabled"}`} key={mod.fileName}>
+                  : <>
+                  {selectedModFiles.length > 0 && <div className="installed-selection-bar"><span>{selectedModFiles.length} of {installedMods.length} selected</span><button className="danger-button" type="button" onClick={() => { setBulkRemoveError(""); setBulkRemoveTarget([...selectedModFiles]); }}><Trash2 size={14} /> Delete selected</button></div>}
+                  <div className="installed-mod-list">{installedMods.map((mod) => <article className={`installed-mod-row ${mod.enabled ? "" : "is-disabled"}`} key={mod.fileName}>
+                    <input className="installed-mod-checkbox" type="checkbox" checked={selectedModFiles.includes(mod.fileName)} onChange={() => toggleModSelection(mod.fileName)} aria-label={`Select ${mod.name}`} />
                     <span className={`installed-mod-icon ${mod.enabled ? "" : "disabled"}`}>{mod.enabled ? <PackageCheck size={18} /> : <CircleAlert size={18} />}</span>
                     <span className="installed-mod-copy"><strong>{mod.name}</strong><small>{mod.version ? `Version ${mod.version} · ` : ""}{mod.fileName} · {formatBytes(mod.size)}</small></span>
                     <span className={`installed-mod-state ${mod.enabled ? "enabled" : "disabled"}`}>{mod.enabled ? "Enabled" : "Disabled"}</span>
+                    <button className="secondary-button installed-switch" type="button" disabled={!desktop || isSwitchingVersion} onClick={() => setSwitchTarget(mod)}><ArrowDownUp size={14} /> Switch version</button>
                     <button className="secondary-button installed-toggle" type="button" disabled={busyFile === mod.fileName} onClick={() => void toggleMod(mod)}>{busyFile === mod.fileName ? <LoaderCircle className="spin" size={14} /> : mod.enabled ? "Disable" : "Enable"}</button>
                     <button className="icon-button installed-remove" type="button" disabled={busyFile === mod.fileName} aria-label={`Remove ${mod.name}`} onClick={() => setRemoveTarget(mod)}><Trash2 size={16} /></button>
-                  </article>)}</div>}
+                  </article>)}</div>
+                  </>}
           </div>
         )}
       </section>
@@ -574,7 +665,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
               {instanceContext?.loader && instanceContext.loader !== loaderFilter && <div className="mod-version-warning"><CircleAlert size={15} /><span>This list is filtered for {loaderName(loaderFilter)}. Your instance uses {loaderName(instanceContext.loader)}.</span></div>}
               {instanceContext?.sharedGameDirectory && <div className="mod-version-warning"><CircleAlert size={15} /><span>This mods folder is shared with another instance.</span></div>}
               {installError && <div className="error-banner mod-error" role="alert"><CircleAlert size={15} /><span>{installError}</span></div>}
-              <button className="play-button mod-install-button" type="button" disabled={!canInstall || isLoadingDetails || isInstalling} onClick={() => setConfirmInstall(true)}>{isInstalling ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}{isInstalling ? "Installing…" : `Install ${requiredDependencyCount ? `+ ${requiredDependencyCount} required` : "version"}`}</button>
+              <button className="play-button mod-install-button" type="button" disabled={!canInstall || isLoadingDetails || isInstalling || selectedProjectIsInstalled} title={selectedProjectIsInstalled ? "This project is already installed in the selected instance." : undefined} onClick={() => setConfirmInstall(true)}>{isInstalling ? <LoaderCircle className="spin" size={16} /> : selectedProjectIsInstalled ? <Check size={16} /> : <Download size={16} />}{isInstalling ? "Installing…" : selectedProjectIsInstalled ? "Already installed" : `Install ${requiredDependencyCount ? `+ ${requiredDependencyCount} required` : "version"}`}</button>
               <small className="mod-install-boundary"><ShieldAlert size={13} /> Mod files contain executable code. Review the author and project before installing.</small>
             </aside>
           </div>
@@ -592,6 +683,12 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
       {removeTarget && <div className="modal-backdrop confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRemoveTarget(null); }}>
         <section className="modal-card small-modal" role="alertdialog" aria-modal="true" aria-labelledby="mod-remove-title"><div className="modal-header"><div><p className="eyebrow danger-eyebrow"><Trash2 size={14} /> REMOVE MOD FILE</p><h2 id="mod-remove-title">Remove {removeTarget.name}?</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setRemoveTarget(null)}><X size={18} /></button></div><p className="modal-copy">This permanently removes <code>{removeTarget.fileName}</code> from this instance's mods folder. Other instance files are not changed.</p><div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setRemoveTarget(null)}>Keep file</button><button className="danger-button" type="button" onClick={() => void removeMod()}><Trash2 size={15} /> Remove mod file</button></div></section>
       </div>}
+
+      {bulkRemoveTarget && <div className="modal-backdrop confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isRemovingMods) setBulkRemoveTarget(null); }}>
+        <section className="modal-card small-modal" role="alertdialog" aria-modal="true" aria-labelledby="mod-bulk-remove-title"><div className="modal-header"><div><p className="eyebrow danger-eyebrow"><Trash2 size={14} /> REMOVE MOD FILES</p><h2 id="mod-bulk-remove-title">Delete {bulkRemoveTarget.length === installedMods.length ? "all" : "selected"} mods?</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setBulkRemoveTarget(null)} disabled={isRemovingMods}><X size={18} /></button></div><p className="modal-copy">This permanently removes {bulkRemoveTarget.length} mod file{bulkRemoveTarget.length === 1 ? "" : "s"} from this instance's mods folder. Other instance files, saves, and settings are not changed.</p>{bulkRemoveError && <div className="error-banner mod-error bulk-remove-error" role="alert"><CircleAlert size={15} /><span>{bulkRemoveError}</span></div>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setBulkRemoveTarget(null)} disabled={isRemovingMods}>Keep files</button><button className="danger-button" type="button" onClick={() => void removeBulkTarget()} disabled={isRemovingMods}>{isRemovingMods ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}{isRemovingMods ? "Deleting…" : `Delete ${bulkRemoveTarget.length} mod${bulkRemoveTarget.length === 1 ? "" : "s"}`}</button></div></section>
+      </div>}
+
+      {switchTarget && selectedInstanceId && <ModVersionSwitchDialog mod={switchTarget} instanceId={selectedInstanceId} context={instanceContext} initialProvider={provider} curseForgeKey={curseForgeKey} switching={isSwitchingVersion} onClose={() => setSwitchTarget(null)} onRequestCurseForgeKey={() => { setSwitchTarget(null); setProvider("curseforge"); setKeyDraft(curseForgeKey); setShowKeyInput(true); }} onSwitch={switchInstalledModVersion} />}
     </>
   );
 }

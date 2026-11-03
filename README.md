@@ -16,7 +16,9 @@ OpnLauncher is not affiliated with, endorsed by, or associated with Mojang Studi
 - Search and filter Mojang's official releases, snapshots, and older alpha/beta versions.
 - Install supported vanilla versions into a new isolated instance folder with bounded parallel downloads, progress, retry, cancellation, and upstream SHA-1/size checks.
 - Search Modrinth and CurseForge mods by Minecraft version and loader, inspect project images and build details, and filter results by category and popularity.
-- Install compatible mod builds with required dependencies, checksum/size verification, progress and cancellation; manage existing JARs by enabling, disabling, or removing them.
+- Install compatible mod builds with required dependencies, checksum/size verification, progress and cancellation; manage existing JARs by enabling, disabling, removing one or many, and switching versions.
+- Compare a mod's available releases with sortable and filterable Minecraft version, loader, and release-type controls. Switching replaces the selected mod only after the new file passes its integrity check.
+- Disable duplicate installs in Discover when the project is already present in the selected instance, including common Fabric JAR filename patterns.
 - Use CurseForge's official API with your own session-only key. The key stays in app memory, is sent only to CurseForge, and is not stored in the app database or preferences.
 - Detect Fabric, Forge, NeoForge, and Quilt from each installed version's metadata so search filters and compatible builds follow the selected instance.
 - Java runtime discovery through `JAVA_HOME`, `PATH`, and common Linux locations.
@@ -64,7 +66,7 @@ cargo test --no-default-features --lib --manifest-path src-tauri/Cargo.toml
 
 The app stores its SQLite database, managed instance directories and downloaded vanilla game files, launch logs, and generated native-library cache in Tauri's application data directory. Downloads from the general version browser go into a separate new instance directory. When you choose Game setup for a specific instance, verified Minecraft and loader files are added to that instance's selected game folder; existing files that do not match the expected integrity data are left untouched. A registered local folder may be shared with another instance, and the app warns when it detects this.
 
-Interface and default preferences, including theme, accent color, default Java, default memory, custom Java paths, instance favorites, and selected instance and local profile, are stored locally in the desktop WebView. They are not uploaded. Mod files are installed into the selected instance's `mods` folder. Fabric libraries and loader profiles, or Forge installer output, are written to the selected game folder after you choose Install. Existing worlds are kept in place.
+Interface and default preferences, including theme, accent color, default Java, default memory, custom Java paths, instance favorites, and selected instance and local profile, are stored locally in the desktop WebView. They are not uploaded. Mod files and their provider project/version references are stored in the selected instance's `mods` folder and SQLite database. Mod deletion is limited to the confirmed JAR files selected in the Installed view. A version switch stages and verifies the replacement before removing the previous mod file. Fabric libraries and loader profiles, or Forge installer output, are written to the selected game folder after you choose Install. Existing worlds are kept in place.
 
 ## Development status
 

@@ -2,7 +2,7 @@
 
 This roadmap tracks implementation against the project specification. Work is incremental; a milestone is complete only after its behavior is implemented and validated. No milestone implies a public release.
 
-## Current foundation — 0.1.0-dev.8
+## Current foundation — 0.1.0-dev.9
 
 The repository contains a Tauri 2 desktop shell, React/TypeScript interface, Rust backend, SQLite persistence, Java discovery, existing-installation detection, instance records, development-only unverified profiles, a local launch-plan resolver, and an initial official vanilla version installer. The installer has not yet been exercised against live Mojang files, and a real desktop session and in-game launch still need validation.
 
@@ -18,6 +18,8 @@ Completed in this development version:
 - Kept loader profile switching additive: worlds and mods remain in the selected game folder.
 - Added per-instance Minecraft and loader selection followed by additive setup installation; the Mods page uses each selected instance's detected metadata.
 - Fixed Fabric profile installation for coordinate-and-repository metadata by resolving Maven artifacts and checking their SHA-1 sidecars.
+- Added per-mod version switching across available project releases, with Minecraft/loader/release filters, sorting, exact compatibility checks, confirmation, and integrity-checked replacement.
+- Added installed-mod selection and confirmed batch/delete-all removal, plus duplicate-install button states in the provider browser.
 
 Remaining follow-up priorities:
 
