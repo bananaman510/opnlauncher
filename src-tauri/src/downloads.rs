@@ -19,6 +19,7 @@ use crate::launch;
 use crate::minecraft::is_safe_id;
 
 const VERSION_MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+const HORIZON_VERSION_ID: &str = "26.3";
 const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_INSTALL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
@@ -64,6 +65,19 @@ struct ManifestEntry {
     release_time: String,
     url: String,
     sha1: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct HorizonResearchLock {
+    minecraft: HorizonMinecraftPins,
+}
+
+#[derive(Clone, Deserialize)]
+struct HorizonMinecraftPins {
+    version: String,
+    manifest_sha1: String,
+    client_sha1: String,
+    server_sha1: String,
 }
 
 #[derive(Clone)]
@@ -292,6 +306,136 @@ pub fn install_horizon_version_using_source(
         true,
         source_root,
     )
+}
+
+/// Ensure Horizon's preparer has Mojang's original, pinned 26.3 metadata available.
+/// Some launchers rewrite or Mojang republishes the per-install version JSON, while Horizon only
+/// accepts a small set of known hashes. The canonical copy belongs in the preparer's private cache.
+pub fn stage_pinned_horizon_manifest(preparer_root: &Path) -> Result<PathBuf> {
+    let lock_path = preparer_root.join("research-lock.json");
+    let lock_metadata = fs::symlink_metadata(&lock_path)?;
+    if lock_metadata.file_type().is_symlink() || !lock_metadata.is_file() || lock_metadata.len() > MAX_METADATA_BYTES {
+        return Err(LauncherError::Unsupported(
+            "Horizon research lock is not a safe metadata file".to_owned(),
+        ));
+    }
+    let lock_bytes = read_regular_file_limited(&lock_path, MAX_METADATA_BYTES)?;
+    let lock: HorizonResearchLock = serde_json::from_slice(&lock_bytes)?;
+    let pins = lock.minecraft;
+    if pins.version != HORIZON_VERSION_ID
+        || !is_sha1(&pins.manifest_sha1)
+        || !is_sha1(&pins.client_sha1)
+        || !is_sha1(&pins.server_sha1)
+    {
+        return Err(LauncherError::Unsupported(
+            "Horizon research lock has invalid Minecraft 26.3 pins".to_owned(),
+        ));
+    }
+
+    let destination = safe_target(
+        preparer_root,
+        Path::new(".local/minecraft/26.3/manifest.json"),
+    )?;
+    if path_exists_without_following_links(&destination)? {
+        validate_cached_horizon_manifest(&destination, &pins)?;
+        return Ok(destination);
+    }
+
+    let url = format!(
+        "https://piston-meta.mojang.com/v1/packages/{}/{HORIZON_VERSION_ID}.json",
+        pins.manifest_sha1.to_ascii_lowercase()
+    );
+    let client = build_client()?;
+    let bytes = fetch_bytes(&client, &url)?;
+    validate_horizon_manifest_bytes(&bytes, &pins)?;
+    persist_horizon_manifest(&destination, &bytes, &pins)?;
+    Ok(destination)
+}
+
+fn path_exists_without_following_links(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn validate_cached_horizon_manifest(path: &Path, pins: &HorizonMinecraftPins) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_METADATA_BYTES {
+        return Err(LauncherError::Unsupported(
+            "cached Horizon manifest is not a safe metadata file".to_owned(),
+        ));
+    }
+    let bytes = read_regular_file_limited(path, MAX_METADATA_BYTES)?;
+    validate_horizon_manifest_bytes(&bytes, pins).map_err(|_| {
+        LauncherError::Unsupported(format!(
+            "cached Horizon manifest was modified or is invalid: {}",
+            path.display()
+        ))
+    })
+}
+
+fn validate_horizon_manifest_bytes(bytes: &[u8], pins: &HorizonMinecraftPins) -> Result<()> {
+    if bytes.len() as u64 > MAX_METADATA_BYTES
+        || !is_sha1(&pins.manifest_sha1)
+        || sha1_hex(bytes) != pins.manifest_sha1.to_ascii_lowercase()
+    {
+        return Err(LauncherError::Unsupported(
+            "Mojang's Horizon version manifest failed its pinned SHA-1 check".to_owned(),
+        ));
+    }
+    let manifest: Value = serde_json::from_slice(bytes)?;
+    let downloads = manifest.get("downloads");
+    let artifact_sha1 = |name: &str| {
+        downloads
+            .and_then(|value| value.get(name))
+            .and_then(|value| value.get("sha1"))
+            .and_then(Value::as_str)
+    };
+    if manifest.get("id").and_then(Value::as_str) != Some(HORIZON_VERSION_ID)
+        || artifact_sha1("client") != Some(pins.client_sha1.as_str())
+        || artifact_sha1("server") != Some(pins.server_sha1.as_str())
+    {
+        return Err(LauncherError::Unsupported(
+            "Mojang's Horizon version manifest does not match the pinned 26.3 game files".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn persist_horizon_manifest(
+    destination: &Path,
+    bytes: &[u8],
+    pins: &HorizonMinecraftPins,
+) -> Result<()> {
+    validate_horizon_manifest_bytes(bytes, pins)?;
+    if path_exists_without_following_links(destination)? {
+        return validate_cached_horizon_manifest(destination, pins);
+    }
+    let mut temporary = temporary_file(destination)?;
+    temporary.file.as_mut().expect("temporary manifest remains open").write_all(bytes)?;
+    temporary.file.as_mut().expect("temporary manifest remains open").sync_all()?;
+    temporary.file.take();
+    match fs::hard_link(&temporary.path, destination) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            validate_cached_horizon_manifest(destination, pins)
+        }
+        Err(error) => Err(error.into()),
+    }?;
+    Ok(())
+}
+
+fn read_regular_file_limited(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(path)?.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(LauncherError::Unsupported(
+            "metadata file exceeds its size limit".to_owned(),
+        ));
+    }
+    Ok(bytes)
 }
 
 fn install_version_with_policy(
@@ -1266,6 +1410,61 @@ fn create_virtual_assets(root: &Path, assets_id: &str, entries: &[(PathBuf, Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn horizon_manifest_fixture() -> (Vec<u8>, HorizonMinecraftPins) {
+        let client_sha1 = "e877b6a07acd633fb3bb475002175cec036e7b87";
+        let server_sha1 = "33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c";
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "id": "26.3",
+            "downloads": {
+                "client": { "sha1": client_sha1 },
+                "server": { "sha1": server_sha1 }
+            }
+        }))
+        .unwrap();
+        let pins = HorizonMinecraftPins {
+            version: HORIZON_VERSION_ID.to_owned(),
+            manifest_sha1: sha1_hex(&bytes),
+            client_sha1: client_sha1.to_owned(),
+            server_sha1: server_sha1.to_owned(),
+        };
+        (bytes, pins)
+    }
+
+    fn horizon_manifest_test_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target")
+            .join(format!("horizon-manifest-test-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn validates_and_stages_the_pinned_horizon_manifest_without_replacing_it() {
+        let root = horizon_manifest_test_root();
+        fs::create_dir_all(&root).unwrap();
+        let (bytes, pins) = horizon_manifest_fixture();
+        let destination = safe_target(&root, Path::new(".local/minecraft/26.3/manifest.json")).unwrap();
+
+        validate_horizon_manifest_bytes(&bytes, &pins).unwrap();
+        persist_horizon_manifest(&destination, &bytes, &pins).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+        validate_cached_horizon_manifest(&destination, &pins).unwrap();
+
+        fs::write(&destination, b"modified metadata").unwrap();
+        assert!(persist_horizon_manifest(&destination, &bytes, &pins).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"modified metadata");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_a_pinned_horizon_manifest_with_mismatched_game_artifacts() {
+        let (bytes, mut pins) = horizon_manifest_fixture();
+        pins.client_sha1 = "0000000000000000000000000000000000000000".to_owned();
+
+        assert!(validate_horizon_manifest_bytes(&bytes, &pins).is_err());
+        pins.client_sha1 = "e877b6a07acd633fb3bb475002175cec036e7b87".to_owned();
+        pins.manifest_sha1 = "0000000000000000000000000000000000000000".to_owned();
+        assert!(validate_horizon_manifest_bytes(&bytes, &pins).is_err());
+    }
 
     #[test]
     fn reuses_only_checksum_verified_files_from_a_selected_installation() {

@@ -981,7 +981,7 @@ function App() {
 
               <div className="home-grid">
                 <section className="hero-card">
-                  <div className="hero-art" aria-hidden="true"><span className="hero-sun" /><span className="hero-ridge ridge-back" /><span className="hero-ridge ridge-front" /><span className="hero-pixel pixel-one" /><span className="hero-pixel pixel-two" /><span className="hero-pixel pixel-three" /></div>
+                  <div className="hero-art" aria-hidden="true" />
                   <div className="hero-content">
                     <div className="hero-topline"><span className="hero-kicker"><Zap size={14} /> QUICK PLAY</span><span className="hero-local-tag"><span /> LOCAL INSTANCE</span></div>
                     {selectedInstance ? (

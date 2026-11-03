@@ -2,6 +2,18 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.15] - Unreleased
+
+### Fixed
+
+- Horizon preparation now stages Mojang's SHA-1-pinned Minecraft 26.3 manifest in its private preparer cache, avoiding failures when a game installation contains a republished or launcher-rewritten version JSON.
+- Reject modified cached Horizon manifests instead of silently replacing them.
+
+### Improved
+
+- Reworked the home and Horizon setup surfaces with original voxel landscape artwork, clearer color accents, and a balanced responsive card layout.
+- Added Minecraft landscape artwork to the Horizon profile card in the version browser.
+
 ## [0.1.0-dev.14] - Unreleased
 
 ### Added

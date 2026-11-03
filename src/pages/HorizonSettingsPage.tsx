@@ -46,16 +46,16 @@ export function HorizonSettingsPage(props: HorizonSettingsPageProps) {
   }
   return (
     <>
-      <section className="page-heading settings-page-heading">
+      <section className="page-heading settings-page-heading horizon-page-heading">
         <div><p className="eyebrow"><Sparkles size={14} /> RUST GAME ENGINE</p><h1>Horizon</h1><p className="page-subtitle">Manage the separate Minecraft 26.3 Rust profiles in OpnLauncher.</p></div>
         {horizonInstances.length > 0 && <div className="settings-select-wrap horizon-instance-picker"><select aria-label="Horizon instance" value={props.selectedInstance?.engine === "horizon" ? props.selectedInstance.id : ""} onChange={(event) => props.onSelectInstance(event.target.value)}><option value="" disabled>Select a Horizon profile</option>{horizonInstances.map((instance) => <option key={instance.id} value={instance.id}>{instance.name}</option>)}</select></div>}
       </section>
 
       <div className="settings-workspace horizon-settings-workspace">
         <main className="settings-content horizon-settings-content">
-          <section className="settings-section-view">
+          <section className="settings-section-view horizon-runtime-layout">
             <div className="settings-section-heading"><h2>Horizon runtime</h2><p>OpnLauncher builds and manages Horizon directly from its included Rust source.</p></div>
-            <div className="settings-group">
+            <div className="settings-group horizon-engine-card">
               <header><span><strong>Integrated Horizon engine</strong><small>Game client source is built into OpnLauncher as a managed runtime.</small></span><Cpu size={17} /></header>
               {props.clientInfo ? <div className="horizon-verified"><Check size={15} /><span><strong>Horizon {props.clientInfo.version} is included</strong><small>Minecraft {props.clientInfo.minecraftVersion} · Local profiles · telemetry disabled</small></span></div> : <p className="horizon-path-help"><CircleAlert size={14} /> The bundled Horizon runtime is not available in this build. Rebuild OpnLauncher to include it.</p>}
             </div>
@@ -69,7 +69,7 @@ export function HorizonSettingsPage(props: HorizonSettingsPageProps) {
               <div className="horizon-path-row"><input className="field-control" aria-label="Add Minecraft folder for Horizon" placeholder="Add another .minecraft or launcher instance folder" value={minecraftFolderInput} onChange={(event) => setMinecraftFolderInput(event.target.value)} /><button className="secondary-button" type="button" onClick={() => void addMinecraftFolder()} disabled={!props.desktop || !minecraftFolderInput.trim()}><Plus size={14} /> Add folder</button></div>
               {minecraftFolderError && <p className="settings-inline-error" role="alert"><CircleAlert size={14} /> {minecraftFolderError}</p>}
             </div>
-            <div className="settings-group">
+            <div className="settings-group horizon-resources-card">
               <header><span><strong>Prepared game resources</strong><small>Managed automatically from your own Minecraft 26.3 files.</small></span><FolderOpen size={17} /></header>
               <div className="horizon-verified">{props.resourcesReady ? <Check size={15} /> : <Info size={15} />}<span><strong>{props.resourcesReady ? "Resources ready" : "Resources not prepared"}</strong><small>{props.resourcesPath || "OpnLauncher’s private Horizon folder"}</small></span></div>
               <p className="horizon-path-help"><HardDrive size={14} /> The resource folder is managed by OpnLauncher. Worlds, local settings, and Horizon mods stay in each profile's own folder.</p>

@@ -137,14 +137,6 @@ kbd { flex: 0 0 auto; padding: 3px 5px; color: var(--faint); background: var(--p
 .hero-card { position: relative; display: flex; min-height: 368px; overflow: hidden; isolation: isolate; align-items: stretch; padding: 29px; background: linear-gradient(135deg, #18251e 0%, #17251f 46%, #18271d 100%); border: 1px solid #34493b; border-radius: 22px; box-shadow: 0 22px 55px #0002; }
 .hero-card::before { position: absolute; z-index: -1; inset: 0; background: linear-gradient(90deg, #142019 0%, #16231ce8 48%, #1c2a1d6b 100%); content: ""; }
 .hero-art { position: absolute; z-index: -2; inset: 0; overflow: hidden; background: radial-gradient(ellipse at 78% 24%, #596f3638 0%, transparent 44%); }
-.hero-sun { position: absolute; top: 24px; right: 13%; width: 190px; aspect-ratio: 1; background: radial-gradient(circle at 34% 31%, #edffac 0, #c8e985 32%, #b9d982 58%, #89ab6d 100%); border: 1px solid #ecffd16c; border-radius: 50%; box-shadow: 0 0 90px #bde27b36; opacity: .72; }
-.hero-ridge { position: absolute; right: -7%; bottom: -154px; width: 85%; height: 285px; border: 1px solid #ffffff10; transform: rotate(-11deg); }
-.ridge-back { background: linear-gradient(150deg, #314b34 0%, #20342a 56%, #192a22 100%); clip-path: polygon(0 38%, 17% 24%, 30% 46%, 43% 15%, 60% 35%, 72% 19%, 100% 41%, 100% 100%, 0 100%); }
-.ridge-front { right: -22%; bottom: -182px; width: 100%; background: linear-gradient(145deg, #263c2a, #18291f 74%); clip-path: polygon(0 39%, 18% 18%, 36% 42%, 54% 22%, 68% 43%, 82% 25%, 100% 39%, 100% 100%, 0 100%); }
-.hero-pixel { position: absolute; width: 18px; height: 18px; background: #c5e48940; box-shadow: 0 0 18px #d8f5a322; }
-.pixel-one { right: 27%; top: 56%; }
-.pixel-two { right: 11%; top: 66%; width: 11px; height: 11px; }
-.pixel-three { right: 37%; top: 71%; width: 8px; height: 8px; }
 .hero-content { position: relative; z-index: 1; display: flex; width: 100%; flex-direction: column; align-items: flex-start; }
 .hero-topline { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: auto; }
 .hero-kicker { display: inline-flex; align-items: center; gap: 8px; color: #d9edbe; font-size: 12px; font-weight: 760; letter-spacing: 1.25px; }
@@ -741,7 +733,6 @@ select.field-control option { color: var(--text); background: var(--panel); }
   .heading-actions > button { flex: 1; }
   .device-status { margin-top: 0; }
   .hero-card { min-height: 365px; padding: 20px; border-radius: 18px; }
-  .hero-sun { top: 45px; right: 4%; width: 150px; }
   .hero-card h2 { max-width: 100%; font-size: 29px; }
   .hero-local-tag { font-size: 10px; }
   .hero-facts { gap: 6px; }
@@ -793,6 +784,146 @@ select.field-control option { color: var(--text); background: var(--panel); }
   .inspected-version { grid-template-columns: 1fr; }
   .inspected-version .field-label { grid-column: auto; }
   .dialog-actions > button { flex: 1; }
+}
+
+/* Launcher artwork and clearer page surfaces */
+:root { --forest: #89cf91; }
+:root[data-theme="light"] { --forest: #3f8058; }
+.page-scroll {
+  background:
+    radial-gradient(ellipse at 92% 1%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 32rem),
+    radial-gradient(ellipse at 4% 42%, color-mix(in srgb, var(--forest) 5%, transparent), transparent 34rem);
+}
+.hero-card {
+  min-height: 382px;
+  background: #203a35;
+  border-color: #526c56;
+  box-shadow: 0 24px 58px #0003, inset 0 1px #ffffff18;
+}
+.hero-card::before {
+  background: linear-gradient(90deg, #15221eef 0%, #15221edc 37%, #18271e75 68%, #18271e22 100%), linear-gradient(0deg, #13231b72, transparent 58%);
+}
+.hero-art {
+  background: url("./assets/voxel-world.svg") center right / cover no-repeat;
+  opacity: .94;
+}
+.hero-kicker { color: #d8efc2; }
+.hero-local-tag { background: #18271ec9; border-color: #d7efd535; }
+.hero-version { color: #d5e4c5; }
+.hero-facts > span { background: #18271e99; border-color: #d7efd52b; }
+.library-instance-art { isolation: isolate; }
+.library-instance-art::before {
+  z-index: -1;
+  right: -4%;
+  bottom: -42px;
+  width: 110%;
+  height: 100px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--terrain, #88b665) 65%, transparent), color-mix(in srgb, var(--terrain, #88b665) 18%, #15271f));
+  border: 1px solid #ecffd02a;
+  clip-path: polygon(0 53%, 13% 36%, 28% 50%, 43% 18%, 57% 43%, 70% 24%, 85% 47%, 100% 29%, 100% 100%, 0 100%);
+  content: "";
+}
+.library-instance-art::after {
+  position: absolute;
+  z-index: 0;
+  right: 19%;
+  bottom: 15px;
+  width: 28px;
+  height: 35px;
+  background: linear-gradient(90deg, #6f9c57 50%, #80b760 50%);
+  box-shadow: 8px 10px 0 -3px #3b644c, -12px 7px 0 -5px #d9e58e;
+  clip-path: polygon(22% 0, 78% 0, 78% 24%, 100% 24%, 100% 100%, 0 100%, 0 24%, 22% 24%);
+  content: "";
+}
+.library-instance-art > svg { z-index: 2; }
+.art-grid-overlay { z-index: 1; }
+.art-0 { --terrain: #9ac66b; }
+.art-1 { --terrain: #ad8fd8; }
+.art-2 { --terrain: #dfa365; }
+.art-3 { --terrain: #71c7d0; }
+.horizon-page-heading {
+  position: relative;
+  min-height: 136px;
+  overflow: hidden;
+  align-items: center;
+  padding: 19px 22px;
+  isolation: isolate;
+  background: linear-gradient(105deg, color-mix(in srgb, #3f7953 14%, var(--panel)), color-mix(in srgb, var(--accent) 12%, var(--panel)) 72%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--forest) 28%, var(--line-soft));
+  border-radius: 17px;
+}
+.horizon-page-heading::after {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  right: 0;
+  width: min(48%, 510px);
+  height: 100%;
+  background: linear-gradient(90deg, var(--panel) 0%, transparent 45%), url("./assets/voxel-world.svg") 68% 51% / cover no-repeat;
+  opacity: .48;
+  content: "";
+}
+.horizon-page-heading > div,
+.horizon-page-heading > .horizon-instance-picker { position: relative; z-index: 1; }
+.horizon-page-heading .eyebrow { color: var(--forest); }
+.horizon-page-heading h1 { text-shadow: 0 2px 22px #0003; }
+.horizon-runtime-layout .settings-section-heading,
+.horizon-runtime-layout .horizon-engine-card,
+.horizon-runtime-layout .horizon-source-group,
+.horizon-runtime-layout .horizon-resources-card,
+.horizon-runtime-layout .horizon-prepare-group,
+.horizon-runtime-layout > .settings-inline-error,
+.horizon-runtime-layout > .settings-callout { min-width: 0; }
+.horizon-runtime-layout .horizon-engine-card,
+.horizon-runtime-layout .horizon-source-group,
+.horizon-runtime-layout .horizon-resources-card,
+.horizon-runtime-layout .horizon-prepare-group {
+  box-shadow: 0 12px 30px #00000014, inset 0 1px #ffffff0a;
+}
+.horizon-runtime-layout .horizon-engine-card { background: linear-gradient(135deg, color-mix(in srgb, #547c50 19%, var(--panel)), var(--panel) 72%); border-color: color-mix(in srgb, #84c47a 24%, var(--line-soft)); }
+.horizon-runtime-layout .horizon-engine-card > header > svg { width: 32px; height: 32px; padding: 7px; color: #c7e579; background: #91b84d20; border-radius: 10px; }
+.horizon-runtime-layout .horizon-source-group { background: linear-gradient(135deg, color-mix(in srgb, #418b9a 13%, var(--panel)), var(--panel) 68%); border-color: color-mix(in srgb, #65bec7 20%, var(--line-soft)); }
+.horizon-runtime-layout .horizon-source-group > header > svg { width: 32px; height: 32px; padding: 7px; color: #8bd6e8; background: #58b4c11b; border-radius: 10px; }
+.horizon-runtime-layout .horizon-resources-card { background: linear-gradient(135deg, color-mix(in srgb, #8a72bd 13%, var(--panel)), var(--panel) 72%); border-color: color-mix(in srgb, #a478ff 20%, var(--line-soft)); }
+.horizon-runtime-layout .horizon-resources-card > header > svg { width: 32px; height: 32px; padding: 7px; color: #c0a4ff; background: #a478ff1b; border-radius: 10px; }
+.horizon-runtime-layout .horizon-prepare-group { background: linear-gradient(115deg, color-mix(in srgb, #537a50 17%, var(--panel)), color-mix(in srgb, var(--accent) 10%, var(--panel))); border-color: color-mix(in srgb, var(--forest) 27%, var(--line-soft)); }
+.horizon-runtime-layout .horizon-prepare-group > header > svg { width: 32px; height: 32px; padding: 7px; color: var(--forest); background: color-mix(in srgb, var(--forest) 13%, transparent); border-radius: 10px; }
+.horizon-runtime-layout .settings-section-heading { padding-bottom: 2px; }
+.horizon-runtime-layout .settings-section-heading h2 { font-size: 23px; }
+.horizon-runtime-layout .horizon-prepare-button { align-self: flex-start; min-height: 44px; padding-inline: 18px; }
+.horizon-version-card {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  min-height: 108px;
+  background: linear-gradient(100deg, color-mix(in srgb, var(--forest) 12%, var(--panel)), color-mix(in srgb, var(--accent) 12%, var(--panel)));
+  box-shadow: inset 0 1px #ffffff0b;
+}
+.horizon-version-card::after {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  right: 0;
+  width: min(40%, 390px);
+  height: 100%;
+  background: linear-gradient(90deg, var(--panel) 0%, transparent 52%), url("./assets/voxel-world.svg") 66% 58% / cover no-repeat;
+  opacity: .34;
+  content: "";
+}
+.horizon-version-card > * { position: relative; z-index: 1; }
+
+@media (max-width: 850px) {
+  .horizon-page-heading { min-height: 126px; padding: 17px; }
+  .horizon-page-heading::after { width: 58%; opacity: .3; }
+}
+
+@media (max-width: 640px) {
+  .hero-card { min-height: 350px; }
+  .hero-card::before { background: linear-gradient(90deg, #15221ef5 0%, #15221edb 55%, #18271e70 100%), linear-gradient(0deg, #13231b72, transparent 58%); }
+  .horizon-page-heading { min-height: 0; padding: 15px; }
+  .horizon-page-heading::after { width: 72%; opacity: .2; }
+  .horizon-runtime-layout .horizon-prepare-button { width: 100%; justify-content: center; }
+  .horizon-version-card::after { width: 60%; opacity: .2; }
 }
 
 @media (max-width: 430px) {
@@ -1349,4 +1480,27 @@ select.field-control option { color: var(--text); background: var(--panel); }
   .mod-switch-footer .play-button { justify-content: center; }
   .key-input-row { flex-wrap: wrap; }
   .key-input-row a { padding: 5px 0; }
+}
+
+@media (min-width: 1100px) {
+  .horizon-settings-content > .horizon-runtime-layout {
+    display: grid;
+    grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+    grid-template-areas:
+      "heading heading"
+      "engine source"
+      "resources source"
+      "prepare prepare"
+      "error error"
+      "callout callout";
+    grid-template-rows: auto minmax(130px, auto) auto auto auto auto;
+    align-items: stretch;
+  }
+  .horizon-runtime-layout .settings-section-heading { grid-area: heading; }
+  .horizon-runtime-layout .horizon-engine-card { grid-area: engine; }
+  .horizon-runtime-layout .horizon-source-group { grid-area: source; }
+  .horizon-runtime-layout .horizon-resources-card { grid-area: resources; }
+  .horizon-runtime-layout .horizon-prepare-group { grid-area: prepare; }
+  .horizon-runtime-layout > .settings-inline-error { grid-area: error; }
+  .horizon-runtime-layout > .settings-callout { grid-area: callout; }
 }

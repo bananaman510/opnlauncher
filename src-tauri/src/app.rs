@@ -663,6 +663,20 @@ async fn prepare_horizon_resources(
             return Err("installation cancelled".to_owned());
         }
 
+        let prepare_root = horizon_dir.join(format!("preparer-source-{}", &horizon::HORIZON_SOURCE_REVISION[..8]));
+        horizon::stage_preparer_inputs(&bundled_source_root, &prepare_root).map_err(display_error)?;
+        let _ = prepare_app.emit("download-progress", DownloadProgress {
+            download_id: worker_download_id.clone(),
+            version_id: "26.3 · Horizon".to_owned(),
+            phase: "Preparing official metadata".to_owned(),
+            current_file: "Verifying Mojang’s pinned Minecraft 26.3 manifest".to_owned(),
+            completed_files: 0,
+            total_files: 0,
+            downloaded_bytes: 0,
+            total_bytes: 0,
+        });
+        downloads::stage_pinned_horizon_manifest(&prepare_root).map_err(display_error)?;
+
         let _ = prepare_app.emit("download-progress", DownloadProgress {
             download_id: worker_download_id.clone(),
             version_id: "26.3 · Horizon".to_owned(),
@@ -673,9 +687,6 @@ async fn prepare_horizon_resources(
             downloaded_bytes: 0,
             total_bytes: 0,
         });
-
-        let prepare_root = horizon_dir.join(format!("preparer-source-{}", &horizon::HORIZON_SOURCE_REVISION[..8]));
-        horizon::stage_preparer_inputs(&bundled_source_root, &prepare_root).map_err(display_error)?;
 
         let staging_dir = horizon_dir.join(format!(".resources-staging-{worker_download_id}"));
         fs::create_dir(&staging_dir).map_err(display_error)?;
