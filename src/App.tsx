@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import packageJson from "../package.json";
 import { DownloadsPage } from "./pages/DownloadsPage";
 import { ModsPage } from "./pages/ModsPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { VersionsPage } from "./pages/VersionsPage";
 import {
   ArrowRight,
@@ -23,10 +24,8 @@ import {
   LayoutGrid,
   List,
   LoaderCircle,
-  Moon,
   MonitorCog,
   PackageOpen,
-  Palette,
   Play,
   Plus,
   Search,
@@ -35,7 +34,6 @@ import {
   SlidersHorizontal,
   Sparkles,
   Star,
-  Sun,
   TerminalSquare,
   UsersRound,
   X,
@@ -96,6 +94,29 @@ function readStoredIds(key: string): string[] {
   }
 }
 
+function readStoredPaths(key: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(readStoredValue(key) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function discoverJavaRuntimes(): Promise<JavaRuntime[]> {
+  const systemRuntimes = await invoke<JavaRuntime[]>("list_java_runtimes");
+  const customRuntimes = await Promise.all(readStoredPaths("custom-java-paths").map(async (path) => {
+    try {
+      return await invoke<JavaRuntime>("inspect_java_runtime", { path });
+    } catch {
+      return null;
+    }
+  }));
+  const byPath = new Map<string, JavaRuntime>();
+  [...systemRuntimes, ...customRuntimes].forEach((runtime) => { if (runtime) byPath.set(runtime.path, runtime); });
+  return [...byPath.values()];
+}
+
 function writeStoredValue(key: string, value: string): void {
   try {
     window.localStorage.setItem(`opnlauncher.${key}`, value);
@@ -133,7 +154,12 @@ function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => readStoredValue("theme") === "light" ? "light" : "dark");
   const [accent, setAccent] = useState<AccentColor>(() => {
     const stored = readStoredValue("accent");
-    return accentColors.some((color) => color.id === stored) ? stored as AccentColor : "lime";
+    return accentColors.some((color) => color.id === stored) ? stored as AccentColor : "violet";
+  });
+  const [defaultJavaPath, setDefaultJavaPath] = useState(() => readStoredValue("default-java-path") ?? "");
+  const [defaultMemoryMb, setDefaultMemoryMb] = useState(() => {
+    const stored = Number(readStoredValue("default-memory-mb"));
+    return Number.isFinite(stored) && stored >= 1024 && stored <= 16384 ? stored : 2048;
   });
   const [selectedJavaPath, setSelectedJavaPath] = useState("");
   const [showAddDialog, setShowAddDialog] = useState(false);
@@ -213,7 +239,7 @@ function App() {
         const [savedInstances, foundInstallations, foundRuntimes] = await Promise.all([
           invoke<Instance[]>("list_instances"),
           invoke<MinecraftInstallation[]>("scan_installations"),
-          invoke<JavaRuntime[]>("list_java_runtimes"),
+          discoverJavaRuntimes(),
         ]);
         if (cancelled) return;
         setInstances(savedInstances);
@@ -295,6 +321,14 @@ function App() {
   }, [favoriteIds]);
 
   useEffect(() => {
+    writeStoredValue("default-java-path", defaultJavaPath);
+  }, [defaultJavaPath]);
+
+  useEffect(() => {
+    writeStoredValue("default-memory-mb", String(defaultMemoryMb));
+  }, [defaultMemoryMb]);
+
+  useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "k") {
         event.preventDefault();
@@ -309,9 +343,9 @@ function App() {
   useEffect(() => {
     if (selectedInstance) {
       setMemoryChoice(selectedInstance.memoryMb);
-      setSelectedJavaPath(selectedInstance.javaPath ?? runtimes[0]?.path ?? "");
+      setSelectedJavaPath(selectedInstance.javaPath ?? defaultJavaPath);
     }
-  }, [selectedInstanceId, instances, runtimes]);
+  }, [selectedInstanceId, instances, defaultJavaPath]);
 
   useEffect(() => {
     if (desktop && activePage === "versions" && officialVersions.length === 0) {
@@ -327,6 +361,31 @@ function App() {
   async function refreshInstallations() {
     const found = await invoke<MinecraftInstallation[]>("scan_installations");
     setInstallations(found);
+  }
+
+  async function refreshRuntimes() {
+    const found = await discoverJavaRuntimes();
+    setRuntimes(found);
+  }
+
+  async function addJavaRuntime(path: string) {
+    const runtime = await invoke<JavaRuntime>("inspect_java_runtime", { path });
+    setRuntimes((current) => [...current.filter((entry) => entry.path !== runtime.path), runtime]);
+    const paths = [...new Set([...readStoredPaths("custom-java-paths"), runtime.path])];
+    writeStoredValue("custom-java-paths", JSON.stringify(paths));
+  }
+
+  async function applyInstanceDefaults(instance: Instance): Promise<Instance> {
+    const changes: Partial<Instance> = {};
+    if (defaultMemoryMb !== instance.memoryMb) {
+      await invoke("set_instance_memory", { instanceId: instance.id, memoryMb: defaultMemoryMb });
+      changes.memoryMb = defaultMemoryMb;
+    }
+    if (defaultJavaPath && runtimes.some((runtime) => runtime.path === defaultJavaPath) && defaultJavaPath !== instance.javaPath) {
+      await invoke("set_instance_java", { instanceId: instance.id, javaPath: defaultJavaPath });
+      changes.javaPath = defaultJavaPath;
+    }
+    return { ...instance, ...changes };
   }
 
   async function loadOfficialVersions() {
@@ -368,11 +427,12 @@ function App() {
     setInstallError("");
     setIsInstallingVersion(true);
     try {
-      const created = await invoke<Instance>("install_minecraft_version", {
+      const installed = await invoke<Instance>("install_minecraft_version", {
         name: versionInstanceName.trim(),
         versionId: selectedRemoteVersion.id,
         downloadId,
       });
+      const created = await applyInstanceDefaults(installed);
       setInstances((current) => [created, ...current]);
       setSelectedInstanceId(created.id);
       setMemoryChoice(created.memoryMb);
@@ -453,7 +513,8 @@ function App() {
     setIsBusy(true);
     setBusyMessage("Creating instance");
     try {
-      const created = await invoke<Instance>("create_instance", { name: instanceName });
+      const empty = await invoke<Instance>("create_instance", { name: instanceName });
+      const created = await applyInstanceDefaults(empty);
       setInstances((current) => [created, ...current]);
       setSelectedInstanceId(created.id);
       setInstanceName("");
@@ -597,6 +658,8 @@ function App() {
                     key={id}
                     onClick={() => setActivePage(id)}
                     type="button"
+                    aria-label={label}
+                    title={label}
                     aria-current={activePage === id ? "page" : undefined}
                   >
                     <Icon size={18} strokeWidth={1.8} />
@@ -812,7 +875,34 @@ function App() {
           ) : activePage === "mods" ? (
             <ModsPage desktop={desktop} instances={instances} selectedInstanceId={selectedInstanceId} onSelectInstance={setSelectedInstanceId} curseForgeKey={curseForgeApiKey} onCurseForgeKeyChange={setCurseForgeApiKey} />
           ) : activePage === "settings" ? (
-            <SettingsPage runtimes={runtimes} installations={installations} refreshInstallations={() => void refreshInstallations()} theme={theme} onThemeChange={setTheme} accent={accent} onAccentChange={setAccent} />
+            <SettingsPage
+              runtimes={runtimes}
+              installations={installations}
+              instances={instances}
+              selectedInstance={selectedInstance}
+              refreshInstallations={refreshInstallations}
+              refreshRuntimes={refreshRuntimes}
+              addRuntime={addJavaRuntime}
+              theme={theme}
+              onThemeChange={setTheme}
+              accent={accent}
+              onAccentChange={setAccent}
+              defaultJavaPath={defaultJavaPath}
+              onDefaultJavaChange={setDefaultJavaPath}
+              defaultMemoryMb={defaultMemoryMb}
+              onDefaultMemoryChange={setDefaultMemoryMb}
+              desktop={desktop}
+              appVersion={appVersion}
+              onInstanceUpdated={(updated) => {
+                setInstances((current) => current.map((instance) => instance.id === updated.id ? updated : instance));
+                if (selectedInstanceId === updated.id) {
+                  setMemoryChoice(updated.memoryMb);
+                  setSelectedJavaPath(updated.javaPath ?? defaultJavaPath);
+                }
+              }}
+              onBrowseVersions={() => setActivePage("versions")}
+              onOpenInstances={() => setActivePage("instances")}
+            />
           ) : (
             <>
               <section className="page-heading"><div><p className="eyebrow"><PackageOpen size={14} /> MODPACK WORKSPACE</p><h1>{activeNavigation.label}</h1><p className="page-subtitle">Create, install, and maintain modpacks without losing local changes.</p></div><span className="planned-badge"><span /> IN DEVELOPMENT</span></section>
@@ -926,62 +1016,6 @@ function AccountsPage({
           <div className="planned-signin"><span className="planned-badge"><span /> PLANNED</span><strong>Microsoft sign-in</strong><small>Official authentication will be added as a separate account type.</small></div>
           {selectedProfile && <div className="selected-profile-note">Current test profile: <strong>{selectedProfile.name}</strong></div>}
         </aside>
-      </div>
-    </>
-  );
-}
-
-function SettingsPage({
-  runtimes,
-  installations,
-  refreshInstallations,
-  theme,
-  onThemeChange,
-  accent,
-  onAccentChange,
-}: {
-  runtimes: JavaRuntime[];
-  installations: MinecraftInstallation[];
-  refreshInstallations: () => void;
-  theme: ThemeMode;
-  onThemeChange: (theme: ThemeMode) => void;
-  accent: AccentColor;
-  onAccentChange: (accent: AccentColor) => void;
-}) {
-  return (
-    <>
-      <section className="page-heading"><div><p className="eyebrow"><Settings2 size={14} /> PERSONALIZE YOUR LAUNCHER</p><h1>Settings</h1><p className="page-subtitle">Appearance, Java runtimes, and local game folders.</p></div></section>
-      <div className="settings-layout">
-        <section className="settings-card appearance-card">
-          <div className="settings-card-heading"><span className="settings-icon"><Palette size={18} /></span><span><strong>Appearance</strong><small>Choose how OpnLauncher looks on this device.</small></span></div>
-          <div className="theme-options" role="group" aria-label="Color theme">
-            <button className={`theme-option ${theme === "dark" ? "selected" : ""}`} type="button" onClick={() => onThemeChange("dark")} aria-pressed={theme === "dark"}><span className="theme-option-icon dark-preview"><Moon size={18} /></span><span><strong>Midnight</strong><small>Dark theme</small></span>{theme === "dark" && <Check size={17} />}</button>
-            <button className={`theme-option ${theme === "light" ? "selected" : ""}`} type="button" onClick={() => onThemeChange("light")} aria-pressed={theme === "light"}><span className="theme-option-icon light-preview"><Sun size={18} /></span><span><strong>Daylight</strong><small>Light theme</small></span>{theme === "light" && <Check size={17} />}</button>
-          </div>
-          <div className="accent-picker"><div><strong>Accent color</strong><small>Used for highlights and buttons.</small></div><div className="accent-swatches" role="group" aria-label="Accent color">{accentColors.map((color) => <button className={`accent-swatch swatch-${color.id} ${accent === color.id ? "selected" : ""}`} type="button" key={color.id} onClick={() => onAccentChange(color.id)} aria-label={`${color.label} accent`} aria-pressed={accent === color.id}><span />{accent === color.id && <Check size={13} />}</button>)}</div></div>
-        </section>
-
-        <section className="settings-card">
-          <div className="settings-card-heading"><span className="settings-icon java-settings-icon"><Cpu size={18} /></span><span><strong>Java runtimes</strong><small>{runtimes.length} discovered on this device</small></span><span className="settings-heading-trailing">{runtimes.length}</span></div>
-          {runtimes.length > 0 ? <div className="settings-runtime-list">{runtimes.map((runtime) => <div className="settings-runtime-row" key={runtime.path}><span className="runtime-check"><Check size={14} /></span><span className="settings-runtime-copy"><strong>{javaLabel(runtime.majorVersion)} · {runtime.vendor ?? "Java"}</strong><small title={runtime.path}>{runtime.path}</small></span><span className="runtime-arch">{runtime.architecture ?? "Unknown"}</span></div>)}</div> : <div className="settings-empty"><Cpu size={18} /><span>No Java runtime found. Set JAVA_HOME or install Java with your system package manager.</span></div>}
-        </section>
-
-        <section className="settings-card">
-          <div className="settings-card-heading"><span className="settings-icon folder-settings-icon"><HardDrive size={18} /></span><span><strong>Minecraft locations</strong><small>Existing folders detected on this device.</small></span><button className="text-link settings-heading-action" type="button" onClick={refreshInstallations}>Rescan <ArrowRight size={14} /></button></div>
-          {installations.length > 0 ? <div className="settings-location-list">{installations.map((installation) => <div className="settings-location-row" key={installation.root}><FolderOpen size={17} /><span><strong>{installation.versions.length} installed version{installation.versions.length === 1 ? "" : "s"}</strong><small title={installation.root}>{installation.root}</small></span><span className="location-count">{installation.versions.length}</span></div>)}</div> : <div className="settings-empty"><FolderOpen size={18} /><span>No Minecraft folders found yet. Add an installation from your library.</span></div>}
-        </section>
-
-        <section className="settings-card privacy-settings-card">
-          <div className="settings-card-heading"><span className="settings-icon privacy-settings-icon"><ShieldCheck size={18} /></span><span><strong>Privacy by design</strong><small>No tracking, ads, telemetry, or launcher account.</small></span></div>
-          <p>Theme, accent color, favorites, and selected instances and local profiles are saved on this device. When you browse or install Minecraft versions, OpnLauncher contacts Mojang’s documented metadata and file hosts directly.</p>
-          <div className="privacy-settings-footer"><span><span className="status-pip" /> No background activity</span><span>See PRIVACY.md for network details.</span></div>
-        </section>
-
-        <section className="settings-card updates-card">
-          <div className="settings-card-heading"><span className="settings-icon update-settings-icon"><ArrowDownToLine size={18} /></span><span><strong>Application updates</strong><small>Manual updates only</small></span></div>
-          <p>Automatic update checks are not configured. OpnLauncher will not install updates or contact a launcher update server in the background.</p>
-          <span className="update-status"><span /> Update checks are off</span>
-        </section>
       </div>
     </>
   );

@@ -14,6 +14,7 @@ use crate::database::Database;
 use crate::downloads::{self, DownloadProgress, ProgressSink, RemoteMinecraftVersion};
 use crate::java;
 use crate::launch::{build_launch_plan, LaunchRequest};
+use crate::loaders::{self, InstalledLoaderProfile, LoaderVersion};
 use crate::minecraft;
 use crate::mods::{self, ModDownloadProgress};
 use crate::models::{
@@ -333,6 +334,95 @@ fn list_java_runtimes() -> Vec<JavaRuntime> {
     java::discover_runtimes()
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn inspect_java_runtime(path: String) -> std::result::Result<JavaRuntime, String> {
+    java::inspect_runtime(Path::new(&path)).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn list_loader_versions(
+    loader: String,
+    game_version: String,
+) -> std::result::Result<Vec<LoaderVersion>, String> {
+    tauri::async_runtime::spawn_blocking(move || match loader.as_str() {
+        "fabric" => loaders::fabric_versions(&game_version),
+        "forge" => loaders::forge_versions(&game_version),
+        _ => Err(crate::error::LauncherError::InvalidInput("unsupported mod loader".to_owned())),
+    })
+    .await
+    .map_err(display_error)?
+    .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn list_installed_loader_profiles(
+    instance_id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<InstalledLoaderProfile>, String> {
+    let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
+    loaders::installed_profiles(Path::new(&instance.game_dir)).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn install_fabric_loader(
+    instance_id: String,
+    loader_version: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<Instance, String> {
+    let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
+    let version_id = instance.version_id.as_deref().ok_or_else(|| "install a Minecraft version before adding Fabric".to_owned())?;
+    let game_version = loaders::base_game_version(Path::new(&instance.game_dir), version_id).map_err(display_error)?;
+    let game_dir = PathBuf::from(&instance.game_dir);
+    let installed_version = tauri::async_runtime::spawn_blocking(move || {
+        loaders::install_fabric(&game_dir, &game_version, &loader_version)
+    })
+    .await
+    .map_err(display_error)?
+    .map_err(display_error)?;
+    state.database.set_instance_version(&instance_id, &installed_version).map_err(display_error)?;
+    state.database.get_instance(&instance_id).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn install_forge_loader(
+    instance_id: String,
+    loader_version: String,
+    java_path: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<Instance, String> {
+    let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
+    let version_id = instance.version_id.as_deref().ok_or_else(|| "install a Minecraft version before adding Forge".to_owned())?;
+    let game_version = loaders::base_game_version(Path::new(&instance.game_dir), version_id).map_err(display_error)?;
+    let game_dir = PathBuf::from(&instance.game_dir);
+    let java_path = PathBuf::from(java_path);
+    let installed_version = tauri::async_runtime::spawn_blocking(move || {
+        loaders::install_forge(&game_dir, &game_version, &loader_version, &java_path)
+    })
+    .await
+    .map_err(display_error)?
+    .map_err(display_error)?;
+    state.database.set_instance_version(&instance_id, &installed_version).map_err(display_error)?;
+    state.database.get_instance(&instance_id).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn set_instance_version(
+    instance_id: String,
+    version_id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<Instance, String> {
+    if !minecraft::is_safe_id(&version_id) {
+        return Err("version identifier is invalid".to_owned());
+    }
+    let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
+    let installation = minecraft::inspect_installation(Path::new(&instance.game_dir)).map_err(display_error)?;
+    if !installation.versions.iter().any(|version| version.id == version_id) {
+        return Err("the selected version is not installed in this instance folder".to_owned());
+    }
+    state.database.set_instance_version(&instance_id, &version_id).map_err(display_error)?;
+    state.database.get_instance(&instance_id).map_err(display_error)
+}
+
 #[tauri::command]
 fn list_offline_profiles(
     state: State<'_, AppState>,
@@ -568,6 +658,12 @@ pub fn run() {
             set_instance_java,
             set_instance_memory,
             list_java_runtimes,
+            inspect_java_runtime,
+            list_loader_versions,
+            list_installed_loader_profiles,
+            install_fabric_loader,
+            install_forge_loader,
+            set_instance_version,
             list_offline_profiles,
             create_offline_profile,
             launch_instance,

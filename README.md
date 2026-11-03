@@ -2,13 +2,13 @@
 
 OpnLauncher is an independent, local-first launcher for Minecraft Java Edition. It is built with Tauri 2, Rust, React, TypeScript, and SQLite.
 
-This repository is an early **development prototype**. It can browse Mojang's official vanilla version list and install compatible releases, snapshots, or historical versions into a new, separate instance directory. It also includes Modrinth mod discovery and compatible mod installation, plus CurseForge discovery when you provide your own API key. Mod management works with existing instances whose loader metadata identifies Fabric, Forge, NeoForge, or Quilt. Loader installers and modpacks are still planned.
+This repository is an early **development prototype**. It can browse Mojang's official vanilla version list and install compatible releases, snapshots, or historical versions into a new, separate instance directory. It also includes Modrinth mod discovery and compatible mod installation, plus CurseForge discovery when you provide your own API key. Fabric and Forge loader builds can be installed into a selected instance, and existing Fabric, Forge, NeoForge, and Quilt profiles can be selected from the loader manager. Modpacks are still planned.
 
 OpnLauncher is not affiliated with, endorsed by, or associated with Mojang Studios or Microsoft. Minecraft is a trademark of Mojang Synergies AB. Minecraft game files are not bundled or redistributed by this project. When requested, OpnLauncher downloads official vanilla game files from URLs in Mojang's version metadata.
 
 ## Current features
 
-- Responsive desktop interface with an overview, instance library, versions, mods, modpacks, accounts, downloads, and settings.
+- Desktop interface with a compact icon rail, instance library, versions, mods, modpacks, accounts, downloads, and categorized settings.
 - Optional light theme, four accent colors, saved instance favorites, grid or list layouts, recent-instance sorting, and Ctrl/Cmd+K instance search.
 - SQLite storage for local instance metadata and development profiles.
 - Detection of common Minecraft directories and installed version metadata.
@@ -20,7 +20,9 @@ OpnLauncher is not affiliated with, endorsed by, or associated with Mojang Studi
 - Use CurseForge's official API with your own session-only key. The key stays in app memory, is sent only to CurseForge, and is not stored in the app database or preferences.
 - Detect Fabric, Forge, NeoForge, and Quilt from each installed version's metadata so search filters and compatible builds follow the selected instance.
 - Java runtime discovery through `JAVA_HOME`, `PATH`, and common Linux locations.
-- Per-instance Java selection and memory allocation.
+- Java manager with custom executable validation, a preferred Java runtime, and per-instance Java selection.
+- Saved defaults for new instance Java selection and memory allocation.
+- Fabric and Forge version browsing and installation for the selected Minecraft version; installed loader profiles can be selected without removing worlds or mods.
 - Visibly unverified local developer profiles with stable offline UUIDs, available in development and release builds.
 - Saved local profile and instance selection for convenient testing between launches.
 - Local launch logs and process exit status.
@@ -61,11 +63,11 @@ cargo test --no-default-features --lib --manifest-path src-tauri/Cargo.toml
 
 The app stores its SQLite database, managed instance directories and downloaded vanilla game files, launch logs, and generated native-library cache in Tauri's application data directory. Registered existing installations continue to point at their existing game directories; downloads go into a separate new instance directory and do not modify those existing files.
 
-Interface preferences, including theme, accent color, instance favorites, and selected instance and local profile, are stored locally in the desktop WebView. They are not uploaded. Mod files are installed into the selected instance's `mods` folder, which may modify a registered external game directory after you confirm installation. Existing worlds and other folders are not changed by mod installation.
+Interface and default preferences, including theme, accent color, default Java, default memory, custom Java paths, instance favorites, and selected instance and local profile, are stored locally in the desktop WebView. They are not uploaded. Mod files are installed into the selected instance's `mods` folder. Fabric libraries and loader profiles, or Forge installer output, are written to the selected game folder after you choose Install. Existing worlds are kept in place.
 
 ## Development status
 
-The first milestone is still in progress. The vanilla installer handles official Minecraft version metadata, libraries, assets, and client files. Mod search and mod file management are implemented for loader-equipped instances; installing loaders, modpacks, Microsoft authentication, backups, and release packaging remain planned. Some very old Minecraft metadata formats may need additional support. See the roadmap for the remaining work.
+The first milestone is still in progress. The vanilla installer handles official Minecraft version metadata, libraries, assets, and client files. Fabric and Forge loader management is implemented, while modpacks, Microsoft authentication, backups, and release packaging remain planned. Some very old Minecraft metadata formats may need additional support. Loader installation has compile and unit-test coverage, but has not yet been validated with a live in-game session on each supported loader. See the roadmap for the remaining work.
 
 See [CHANGELOG.md](CHANGELOG.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [PRIVACY.md](PRIVACY.md) for more detail.
 

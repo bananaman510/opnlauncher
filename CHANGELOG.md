@@ -2,6 +2,21 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.7] - Unreleased
+
+### Added
+
+- Reorganized settings into clear General, Appearance, Java manager, Mod loaders, Storage, Privacy, and About sections, with a compact icon navigation rail and a charcoal-and-violet default theme.
+- Added local defaults for new instances, including preferred Java runtime and memory allocation, plus validation and registration for custom Java executables.
+- Added compatible Fabric and Forge build lists, Fabric profile installation, Forge installer checksum verification and per-instance installation, and switching between loader profiles already installed in a game folder.
+- Added tests for loader profile detection, path validation, version ordering, and instance version switching.
+
+### Security and privacy
+
+- Fabric library downloads are restricted to approved HTTPS hosts, checked against upstream SHA-1 values and sizes, and never overwrite a different existing library.
+- Forge installers are fetched from Forge's Maven repository, checked against the published SHA-1 before execution, run for the selected game folder without a shell, and do not retain changes to `launcher_profiles.json`.
+- Documented the new loader metadata and installer network requests.
+
 ## [0.1.0-dev.6] - Unreleased
 
 ### Improved

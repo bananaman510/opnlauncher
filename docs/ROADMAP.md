@@ -2,7 +2,7 @@
 
 This roadmap tracks implementation against the project specification. Work is incremental; a milestone is complete only after its behavior is implemented and validated. No milestone implies a public release.
 
-## Current foundation — 0.1.0-dev.2
+## Current foundation — 0.1.0-dev.7
 
 The repository contains a Tauri 2 desktop shell, React/TypeScript interface, Rust backend, SQLite persistence, Java discovery, existing-installation detection, instance records, development-only unverified profiles, a local launch-plan resolver, and an initial official vanilla version installer. The installer has not yet been exercised against live Mojang files, and a real desktop session and in-game launch still need validation.
 
@@ -12,6 +12,10 @@ Completed in this development version:
 - Added the official Minecraft version browser and isolated vanilla version downloads with progress, cancellation, retries, and upstream integrity checks.
 - Moved network and file transfer work off the UI command thread.
 - Updated app data and privacy documentation for version downloads.
+- Reorganized desktop navigation and added categorized appearance, Java, loader, storage, privacy, and about settings.
+- Added validated custom Java paths and saved defaults for the Java runtime and memory used by new instances.
+- Added compatible Fabric and Forge version browsing, Fabric profile installation, verified Forge installer execution, and local profile switching.
+- Kept loader profile switching additive: worlds and mods remain in the selected game folder.
 
 Remaining follow-up priorities:
 
@@ -37,19 +41,19 @@ Remaining follow-up priorities:
 - Store tokens in operating-system credential storage where available; never log or send them to an OpnLauncher server.
 - Keep development-only unverified profiles distinct from authenticated accounts.
 
-### 0.4.0 — Isolated instances and Fabric
+### 0.4.0 — Isolated instances and loader validation
 
 - Give instances independent game directories and configurable Java, memory, JVM arguments, resolution, and launch environment.
 - Add explicit delete confirmation and a preserve-worlds choice; keep forget-record behavior non-destructive.
-- Install Fabric incrementally and manage local mods with compatibility information.
-- Add a provider boundary for Modrinth search and compatible project installation, including attribution and rate limits.
+- Validate Fabric and Forge installation and mod compatibility against live Minecraft launches; improve repair and recovery paths.
+- Complete the Modrinth provider workflow with rate-limit handling, compatible project installation, and attribution.
 
 ### 0.5.0 — Modpacks and additional loaders
 
 - Import and export supported Modrinth modpacks with manifest validation and dependency checks.
 - Detect local changes and back up before updates; never silently overwrite user data.
-- Add Quilt, NeoForge, and Forge in separate, testable steps.
-- Add mod enable/disable, update, dependency, and loader-compatibility workflows.
+- Add Quilt and NeoForge in separate, testable steps.
+- Add mod update, dependency, and loader-compatibility workflows.
 
 ### 0.6.0 — Recovery and customization
 

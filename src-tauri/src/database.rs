@@ -189,6 +189,20 @@ impl Database {
         Ok(())
     }
 
+    pub fn set_instance_version(&self, id: &str, version_id: &str) -> Result<()> {
+        let connection = self.connection.lock().map_err(|_| {
+            LauncherError::Unsupported("database lock was poisoned".to_owned())
+        })?;
+        let changed = connection.execute(
+            "UPDATE instances SET version_id = ?1 WHERE id = ?2",
+            params![version_id, id],
+        )?;
+        if changed == 0 {
+            return Err(LauncherError::NotFound(format!("instance {id}")));
+        }
+        Ok(())
+    }
+
     pub fn set_memory(&self, id: &str, memory_mb: u32) -> Result<()> {
         if !(512..=65536).contains(&memory_mb) {
             return Err(LauncherError::InvalidInput(
@@ -351,6 +365,14 @@ mod tests {
         let stored = db.get_instance(&created.id).unwrap();
         assert_eq!(stored.name, "Survival");
         assert_eq!(stored.version_id.as_deref(), Some("1.21.4"));
+    }
+
+    #[test]
+    fn switches_an_instance_to_an_installed_loader_version() {
+        let db = Database::in_memory().unwrap();
+        let instance = db.create_instance("Fabric test", "/tmp/game", Some("1.21.4")).unwrap();
+        db.set_instance_version(&instance.id, "fabric-loader-0.16.10-1.21.4").unwrap();
+        assert_eq!(db.get_instance(&instance.id).unwrap().version_id.as_deref(), Some("fabric-loader-0.16.10-1.21.4"));
     }
 
     #[test]

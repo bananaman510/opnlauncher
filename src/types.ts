@@ -47,6 +47,19 @@ export interface JavaRuntime {
   vendor: string | null;
 }
 
+export interface LoaderVersion {
+  version: string;
+  stable: boolean;
+  recommended: boolean;
+}
+
+export interface InstalledLoaderProfile {
+  versionId: string;
+  minecraftVersion: string;
+  loader: string;
+  loaderVersion: string;
+}
+
 export interface OfflineProfile {
   id: string;
   name: string;
