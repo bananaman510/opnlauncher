@@ -144,6 +144,12 @@ Then:
 
 When reusing a local Minecraft installation, OpnLauncher copies only files that match Mojang's published size and SHA-1 metadata into its private Horizon cache. It does not write into the selected source folder. Missing or invalid files are downloaded from Mojang. Before preparation, OpnLauncher ensures the exact Minecraft 26.3 version manifest pinned by Horizon's included research lock is available in its private preparer cache, fetching it from Mojang on first use and checking its SHA-1 and client/server artifact identities. Preparation also imports Horizon's sounds from the verified Minecraft asset store (about 380 MB) before checking that resources are complete. Horizon profiles keep their worlds and personal settings separate from Java instances. The integration is experimental and has not yet been validated in a live Horizon game session; see [Horizon integration notes](docs/HORIZON.md). Horizon's MIT license and third-party notices are in `src-tauri/horizon-upstream/`.
 
+### Horizon audio and preparation troubleshooting
+
+Linux builds need ALSA development files to include Horizon audio. Fedora users can install them with `sudo dnf install alsa-lib-devel pkgconf-pkg-config`; Debian or Ubuntu users can use `sudo apt install libasound2-dev pkg-config`. Then rebuild the AppImage. The build now stops with an install hint when ALSA is missing instead of silently omitting audio.
+
+If preparation reports `Horizon resources are incomplete: the sounds missing: horizon-prepare sounds`, update to a source version containing the sound-import fix and run **Download files & prepare Horizon** again. OpnLauncher imports the sounds from the verified local Minecraft asset store into its Horizon resources before checking completeness.
+
 ## Local accounts and online play
 
 Local developer profiles are available in both development and release builds for offline testing. Their names and stable offline UUIDs are stored locally and are clearly marked unverified. They do **not** sign in to Microsoft, verify Minecraft ownership, provide an authenticated session, or enable authenticated online-server access. Use them for local single-player testing or appropriately configured local development servers only. OpnLauncher does not bypass ownership checks.
