@@ -1,5 +1,6 @@
-import { ArrowDownToLine, Check, CircleAlert, Cpu, FolderOpen, Gauge, HardDrive, Info, LoaderCircle, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
-import type { DownloadProgress, HorizonClientInfo, Instance, JavaRuntime } from "../types";
+import { ArrowDownToLine, Check, CircleAlert, Cpu, FolderOpen, Gauge, HardDrive, Info, LoaderCircle, Plus, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import { useState } from "react";
+import type { DownloadProgress, HorizonClientInfo, HorizonToolDiscovery, Instance, JavaRuntime, MinecraftInstallation } from "../types";
 
 interface HorizonSettingsPageProps {
   instances: Instance[];
@@ -14,6 +15,13 @@ interface HorizonSettingsPageProps {
   prepareJavaPath: string;
   onPrepareJavaPathChange: (path: string) => void;
   runtimes: JavaRuntime[];
+  installations: MinecraftInstallation[];
+  minecraftSourcePath: string;
+  onMinecraftSourceChange: (path: string) => void;
+  onAddMinecraftFolder: (path: string) => Promise<void>;
+  onScanDevice: () => void;
+  scanning: boolean;
+  tools: HorizonToolDiscovery;
   onPrepareResources: () => void;
   preparing: boolean;
   progress: DownloadProgress | null;
@@ -29,7 +37,20 @@ interface HorizonSettingsPageProps {
 }
 
 export function HorizonSettingsPage(props: HorizonSettingsPageProps) {
+  const [minecraftFolderInput, setMinecraftFolderInput] = useState("");
+  const [minecraftFolderError, setMinecraftFolderError] = useState("");
   const horizonInstances = props.instances.filter((instance) => instance.engine === "horizon");
+  const compatibleInstallations = props.installations.filter((installation) => installation.versions.some((version) => version.id === "26.3"));
+
+  async function addMinecraftFolder() {
+    setMinecraftFolderError("");
+    try {
+      await props.onAddMinecraftFolder(minecraftFolderInput);
+      setMinecraftFolderInput("");
+    } catch (reason) {
+      setMinecraftFolderError(String(reason));
+    }
+  }
   return (
     <>
       <section className="page-heading settings-page-heading">
@@ -42,9 +63,20 @@ export function HorizonSettingsPage(props: HorizonSettingsPageProps) {
           <section className="settings-section-view">
             <div className="settings-section-heading"><h2>Horizon runtime</h2><p>Connect OpnLauncher to the local Horizon client and its prepared game files.</p></div>
             <div className="settings-group">
-              <header><span><strong>Horizon client</strong><small>Path to the built <code>horizon-client</code> executable.</small></span><Cpu size={17} /></header>
+              <header><span><strong>Horizon client</strong><small>OpnLauncher checks your PATH for Horizon tools when it opens.</small></span><Cpu size={17} /></header>
+              {props.tools.clients.length > 0 && <div className="select-wrap"><select className="field-control" aria-label="Detected Horizon clients" value={props.tools.clients.includes(props.clientPath) ? props.clientPath : ""} onChange={(event) => { if (event.target.value) props.onClientPathChange(event.target.value); }}><option value="">Choose a detected client</option>{props.tools.clients.map((path) => <option value={path} key={path}>{path}</option>)}</select><Gauge size={15} /></div>}
               <div className="horizon-path-row"><input className="field-control" aria-label="Horizon client executable" placeholder="/path/to/horizon-client" value={props.clientPath} onChange={(event) => props.onClientPathChange(event.target.value)} /><button className="secondary-button" type="button" onClick={props.onInspectClient} disabled={!props.desktop || !props.clientPath.trim() || props.inspecting}>{props.inspecting ? <RefreshCw size={14} className="spin" /> : <Check size={14} />}{props.inspecting ? "Checking…" : "Verify client"}</button></div>
               {props.clientInfo && <div className="horizon-verified"><Check size={15} /><span><strong>Horizon {props.clientInfo.version}</strong><small>Minecraft {props.clientInfo.minecraftVersion} · Launch interface {props.clientInfo.launchApi}</small></span></div>}
+            </div>
+            <div className="settings-group horizon-source-group">
+              <header><span><strong>Find installed Minecraft files</strong><small>Search standard folders and common third-party launcher instances.</small></span><FolderOpen size={17} /></header>
+              <div className="horizon-source-heading"><span>{props.installations.length} installation{props.installations.length === 1 ? "" : "s"} found</span><button className="settings-quiet-button" type="button" onClick={props.onScanDevice} disabled={!props.desktop || props.scanning}>{props.scanning ? <RefreshCw size={14} className="spin" /> : <RefreshCw size={14} />}{props.scanning ? "Searching…" : "Search this device"}</button></div>
+              <label className="field-label" htmlFor="horizon-minecraft-source">Minecraft 26.3 files</label>
+              <div className="select-wrap"><select id="horizon-minecraft-source" className="field-control" value={props.minecraftSourcePath} onChange={(event) => props.onMinecraftSourceChange(event.target.value)}><option value="">Download into OpnLauncher’s private copy</option>{compatibleInstallations.map((installation) => <option key={installation.root} value={installation.root}>{installation.root}</option>)}</select><HardDrive size={15} /></div>
+              {compatibleInstallations.length === 0 && <p className="horizon-path-help"><Info size={14} /> No detected Minecraft 26.3 installation yet. You can add a folder below, or OpnLauncher will fetch the official files itself.</p>}
+              {compatibleInstallations.length > 0 && <p className="horizon-path-help"><ShieldCheck size={14} /> Matching files are checked against Mojang’s published checksums and copied into Horizon’s private cache. The selected Minecraft installation is never changed; missing files are downloaded.</p>}
+              <div className="horizon-path-row"><input className="field-control" aria-label="Add Minecraft folder for Horizon" placeholder="Add another .minecraft or launcher instance folder" value={minecraftFolderInput} onChange={(event) => setMinecraftFolderInput(event.target.value)} /><button className="secondary-button" type="button" onClick={() => void addMinecraftFolder()} disabled={!props.desktop || !minecraftFolderInput.trim()}><Plus size={14} /> Add folder</button></div>
+              {minecraftFolderError && <p className="settings-inline-error" role="alert"><CircleAlert size={14} /> {minecraftFolderError}</p>}
             </div>
             <div className="settings-group">
               <header><span><strong>Prepared game resources</strong><small>Folder produced by <code>horizon-prepare</code> from Minecraft 26.3 files.</small></span><FolderOpen size={17} /></header>
@@ -54,6 +86,7 @@ export function HorizonSettingsPage(props: HorizonSettingsPageProps) {
             <div className="settings-group horizon-prepare-group">
               <header><span><strong>Download and prepare Minecraft 26.3</strong><small>Fetch the official client, libraries, assets, and server file, then let Horizon prepare its Rust resources.</small></span><ArrowDownToLine size={17} /></header>
               <label className="field-label" htmlFor="horizon-preparer-path">Horizon resource preparer</label>
+              {props.tools.preparers.length > 0 && <div className="select-wrap"><select className="field-control" aria-label="Detected Horizon resource preparers" value={props.tools.preparers.includes(props.preparerPath) ? props.preparerPath : ""} onChange={(event) => { if (event.target.value) props.onPreparerPathChange(event.target.value); }}><option value="">Choose a detected preparer</option>{props.tools.preparers.map((path) => <option value={path} key={path}>{path}</option>)}</select><Gauge size={15} /></div>}
               <input id="horizon-preparer-path" className="field-control" aria-label="Horizon resource preparer executable" placeholder="Path to horizon-prepare" value={props.preparerPath} onChange={(event) => props.onPreparerPathChange(event.target.value)} />
               <label className="field-label" htmlFor="horizon-prepare-java">JDK 25 for preparation</label>
               <div className="select-wrap"><select id="horizon-prepare-java" className="field-control" value={props.prepareJavaPath} onChange={(event) => props.onPrepareJavaPathChange(event.target.value)}><option value="">Choose an installed Java 25 runtime</option>{props.runtimes.filter((runtime) => runtime.majorVersion === 25).map((runtime) => <option key={runtime.path} value={runtime.path}>{runtime.version} · {runtime.vendor ?? "JDK"}</option>)}</select><Gauge size={15} /></div>

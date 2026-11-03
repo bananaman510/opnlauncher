@@ -221,7 +221,16 @@ pub fn install_version(
     cancelled: Arc<AtomicBool>,
     sink: ProgressSink,
 ) -> Result<()> {
-    install_version_with_policy(version_id, install_root, download_id, cancelled, sink, true, false)
+    install_version_with_policy(
+        version_id,
+        install_root,
+        download_id,
+        cancelled,
+        sink,
+        true,
+        false,
+        None,
+    )
 }
 
 pub fn install_version_for_instance(
@@ -231,7 +240,16 @@ pub fn install_version_for_instance(
     cancelled: Arc<AtomicBool>,
     sink: ProgressSink,
 ) -> Result<()> {
-    install_version_with_policy(version_id, install_root, download_id, cancelled, sink, false, false)
+    install_version_with_policy(
+        version_id,
+        install_root,
+        download_id,
+        cancelled,
+        sink,
+        false,
+        false,
+        None,
+    )
 }
 
 pub fn install_horizon_version(
@@ -241,12 +259,39 @@ pub fn install_horizon_version(
     cancelled: Arc<AtomicBool>,
     sink: ProgressSink,
 ) -> Result<()> {
+    install_horizon_version_using_source(
+        version_id,
+        install_root,
+        download_id,
+        cancelled,
+        sink,
+        None,
+    )
+}
+
+pub fn install_horizon_version_using_source(
+    version_id: &str,
+    install_root: &Path,
+    download_id: &str,
+    cancelled: Arc<AtomicBool>,
+    sink: ProgressSink,
+    source_root: Option<&Path>,
+) -> Result<()> {
     if version_id != "26.3" {
         return Err(LauncherError::InvalidInput(
             "Horizon currently supports Minecraft 26.3 only".to_owned(),
         ));
     }
-    install_version_with_policy(version_id, install_root, download_id, cancelled, sink, false, true)
+    install_version_with_policy(
+        version_id,
+        install_root,
+        download_id,
+        cancelled,
+        sink,
+        false,
+        true,
+        source_root,
+    )
 }
 
 fn install_version_with_policy(
@@ -257,6 +302,7 @@ fn install_version_with_policy(
     sink: ProgressSink,
     require_empty_root: bool,
     include_server_artifact: bool,
+    source_root: Option<&Path>,
 ) -> Result<()> {
     if !is_safe_id(version_id) {
         return Err(LauncherError::InvalidInput(
@@ -343,6 +389,9 @@ fn install_version_with_policy(
             "version contains an unsupported number of download files".to_owned(),
         ));
     }
+    if let Some(source_root) = source_root {
+        reuse_verified_files(source_root, install_root, files.values(), &cancelled)?;
+    }
     let total_bytes = files.values().try_fold(0_u64, |total, file| {
         let size = match &file.source {
             DownloadSource::Bytes(bytes) => bytes.len() as u64,
@@ -377,6 +426,124 @@ fn install_version_with_policy(
     }
     reporter.set_phase("Installation complete");
     Ok(())
+}
+
+fn reuse_verified_files<'a>(
+    source_root: &Path,
+    install_root: &Path,
+    files: impl Iterator<Item = &'a DownloadFile>,
+    cancelled: &AtomicBool,
+) -> Result<()> {
+    let source_root = fs::canonicalize(source_root).map_err(|error| {
+        LauncherError::NotFound(format!(
+            "selected Minecraft files at {}: {error}",
+            source_root.display()
+        ))
+    })?;
+    let metadata = fs::symlink_metadata(&source_root)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(LauncherError::InvalidInput(
+            "selected Minecraft source must be a regular folder".to_owned(),
+        ));
+    }
+
+    for item in files {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(LauncherError::Unsupported("installation cancelled".to_owned()));
+        }
+        if item.sha1.is_none() && item.size.is_none() {
+            continue;
+        }
+        let Some(source) = safe_existing_source(&source_root, &item.path)? else {
+            continue;
+        };
+        let target = safe_target(install_root, &item.path)?;
+        if fs::symlink_metadata(&target).is_ok() {
+            continue;
+        }
+        let _ = copy_verified_source_file(&source, &target, item, cancelled)?;
+    }
+    Ok(())
+}
+
+fn safe_existing_source(root: &Path, relative: &Path) -> Result<Option<PathBuf>> {
+    let relative = safe_relative_path(&relative.to_string_lossy())?;
+    let mut current = root.to_path_buf();
+    let components = relative.components().collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(part) = component else {
+            return Err(LauncherError::Unsupported(
+                "source path contains an unsafe component".to_owned(),
+            ));
+        };
+        current.push(part);
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() {
+            return Ok(None);
+        }
+        let is_final = index + 1 == components.len();
+        if is_final {
+            return Ok(metadata.is_file().then_some(current));
+        }
+        if !metadata.is_dir() {
+            return Ok(None);
+        }
+    }
+    Ok(None)
+}
+
+fn copy_verified_source_file(
+    source: &Path,
+    target: &Path,
+    item: &DownloadFile,
+    cancelled: &AtomicBool,
+) -> Result<bool> {
+    let mut input = File::open(source)?;
+    let mut temporary = temporary_file(target)?;
+    let mut hasher = Sha1::new();
+    let mut copied = 0_u64;
+    let limit = item.size.unwrap_or(MAX_FILE_BYTES).min(MAX_FILE_BYTES);
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(LauncherError::Unsupported("installation cancelled".to_owned()));
+        }
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        copied = copied.saturating_add(read as u64);
+        if copied > limit {
+            return Ok(false);
+        }
+        temporary
+            .file
+            .as_mut()
+            .expect("temporary file remains open")
+            .write_all(&buffer[..read])?;
+        hasher.update(&buffer[..read]);
+    }
+    let digest = format!("{:x}", hasher.finalize());
+    if item.size.is_some_and(|expected| expected != copied)
+        || item.sha1.as_deref().is_some_and(|expected| expected != digest.as_str())
+    {
+        return Ok(false);
+    }
+    temporary
+        .file
+        .as_mut()
+        .expect("temporary file remains open")
+        .sync_all()?;
+    temporary.file.take();
+    match fs::hard_link(&temporary.path, target) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn build_client() -> Result<Client> {
@@ -1099,6 +1266,41 @@ fn create_virtual_assets(root: &Path, assets_id: &str, entries: &[(PathBuf, Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reuses_only_checksum_verified_files_from_a_selected_installation() {
+        let test_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target")
+            .join(format!("horizon-source-test-{}", Uuid::new_v4()));
+        let source = test_root.join("source");
+        let destination = test_root.join("destination");
+        fs::create_dir_all(source.join("assets/objects/ab")).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        let bytes = b"verified game asset";
+        let relative = PathBuf::from("assets/objects/ab/object");
+        fs::write(source.join(&relative), bytes).unwrap();
+        let item = DownloadFile {
+            path: relative.clone(),
+            source: DownloadSource::Url("https://example.invalid/object".to_owned()),
+            sha1: Some(sha1_hex(bytes)),
+            size: Some(bytes.len() as u64),
+        };
+
+        let not_cancelled = AtomicBool::new(false);
+        reuse_verified_files(&source, &destination, std::iter::once(&item), &not_cancelled).unwrap();
+        assert_eq!(fs::read(destination.join(&relative)).unwrap(), bytes);
+        assert_eq!(fs::read(source.join(&relative)).unwrap(), bytes);
+
+        let bad_destination = test_root.join("bad-destination");
+        fs::create_dir_all(&bad_destination).unwrap();
+        let bad_item = DownloadFile {
+            sha1: Some("0".repeat(40)),
+            ..item
+        };
+        reuse_verified_files(&source, &bad_destination, std::iter::once(&bad_item), &not_cancelled).unwrap();
+        assert!(!bad_destination.join(relative).exists());
+        fs::remove_dir_all(test_root).unwrap();
+    }
 
     #[test]
     fn parses_and_validates_official_version_manifest_entries() {

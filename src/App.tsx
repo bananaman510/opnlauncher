@@ -47,6 +47,7 @@ import { formatRelativeTime, javaLabel } from "./format";
 import type {
   Instance,
   HorizonClientInfo,
+  HorizonToolDiscovery,
   JavaRuntime,
   LaunchExitEvent,
   LaunchLogEvent,
@@ -188,6 +189,9 @@ function App() {
   const [horizonPreparerPath, setHorizonPreparerPath] = useState(() => readStoredValue("horizon-preparer-path") ?? "");
   const [horizonPrepareJavaPath, setHorizonPrepareJavaPath] = useState(() => readStoredValue("horizon-prepare-java-path") ?? "");
   const [horizonResourcesPath, setHorizonResourcesPath] = useState(() => readStoredValue("horizon-resources-path") ?? "");
+  const [horizonMinecraftSourcePath, setHorizonMinecraftSourcePath] = useState(() => readStoredValue("horizon-minecraft-source-path") ?? "");
+  const [horizonTools, setHorizonTools] = useState<HorizonToolDiscovery>({ clients: [], preparers: [] });
+  const [horizonScanning, setHorizonScanning] = useState(false);
   const [horizonClientInfo, setHorizonClientInfo] = useState<HorizonClientInfo | null>(null);
   const [horizonInspecting, setHorizonInspecting] = useState(false);
   const [horizonPreparing, setHorizonPreparing] = useState(false);
@@ -273,15 +277,43 @@ function App() {
       setIsBusy(true);
       setBusyMessage("Checking this device");
       try {
-        const [savedInstances, foundInstallations, foundRuntimes] = await Promise.all([
+        const [savedInstances, foundInstallations, foundRuntimes, foundHorizonTools] = await Promise.all([
           invoke<Instance[]>("list_instances"),
           invoke<MinecraftInstallation[]>("scan_installations"),
           discoverJavaRuntimes(),
+          invoke<HorizonToolDiscovery>("discover_horizon_tools"),
         ]);
         if (cancelled) return;
+        const detectedInstallations = [...foundInstallations];
+        let savedMinecraftSourceIsValid = Boolean(horizonMinecraftSourcePath);
+        const foundSavedSource = detectedInstallations.find((installation) => installation.root === horizonMinecraftSourcePath);
+        if (horizonMinecraftSourcePath && foundSavedSource && !foundSavedSource.versions.some((version) => version.id === "26.3")) {
+          setHorizonMinecraftSourcePath("");
+          savedMinecraftSourceIsValid = false;
+        } else if (horizonMinecraftSourcePath && !foundSavedSource) {
+          try {
+            const configured = await invoke<MinecraftInstallation>("inspect_installation", { path: horizonMinecraftSourcePath });
+            if (configured.versions.some((version) => version.id === "26.3")) detectedInstallations.push(configured);
+            else {
+              setHorizonMinecraftSourcePath("");
+              savedMinecraftSourceIsValid = false;
+            }
+          } catch {
+            setHorizonMinecraftSourcePath("");
+            savedMinecraftSourceIsValid = false;
+          }
+        }
+        if (cancelled) return;
         setInstances(savedInstances);
-        setInstallations(foundInstallations);
+        setInstallations(detectedInstallations);
         setRuntimes(foundRuntimes);
+        setHorizonTools(foundHorizonTools);
+        if (!horizonClientPath && foundHorizonTools.clients[0]) setHorizonClientPath(foundHorizonTools.clients[0]);
+        if (!horizonPreparerPath && foundHorizonTools.preparers[0]) setHorizonPreparerPath(foundHorizonTools.preparers[0]);
+        if (!savedMinecraftSourceIsValid) {
+          const matching = detectedInstallations.find((installation) => installation.versions.some((version) => version.id === "26.3"));
+          if (matching) setHorizonMinecraftSourcePath(matching.root);
+        }
         setSelectedInstanceId((current) => current && savedInstances.some((instance) => instance.id === current) ? current : savedInstances[0]?.id ?? null);
         if (savedInstances.length > 0) setMemoryChoice(savedInstances[0].memoryMb);
         setFavoriteIds((current) => current.filter((id) => savedInstances.some((instance) => instance.id === id)));
@@ -369,6 +401,7 @@ function App() {
   useEffect(() => { writeStoredValue("horizon-preparer-path", horizonPreparerPath); }, [horizonPreparerPath]);
   useEffect(() => { writeStoredValue("horizon-prepare-java-path", horizonPrepareJavaPath); }, [horizonPrepareJavaPath]);
   useEffect(() => { writeStoredValue("horizon-resources-path", horizonResourcesPath); }, [horizonResourcesPath]);
+  useEffect(() => { writeStoredValue("horizon-minecraft-source-path", horizonMinecraftSourcePath); }, [horizonMinecraftSourcePath]);
   useEffect(() => { writeStoredValue("horizon-window-settings", JSON.stringify(horizonWindowSettings)); }, [horizonWindowSettings]);
 
   useEffect(() => {
@@ -410,7 +443,73 @@ function App() {
 
   async function refreshInstallations() {
     const found = await invoke<MinecraftInstallation[]>("scan_installations");
-    setInstallations(found);
+    const detected = [...found];
+    const selectedSource = detected.find((installation) => installation.root === horizonMinecraftSourcePath);
+    if (horizonMinecraftSourcePath && selectedSource && !selectedSource.versions.some((version) => version.id === "26.3")) {
+      setHorizonMinecraftSourcePath("");
+    } else if (horizonMinecraftSourcePath && !selectedSource) {
+      try {
+        const configured = await invoke<MinecraftInstallation>("inspect_installation", { path: horizonMinecraftSourcePath });
+        if (configured.versions.some((version) => version.id === "26.3")) detected.push(configured);
+        else setHorizonMinecraftSourcePath("");
+      } catch {
+        setHorizonMinecraftSourcePath("");
+      }
+    }
+    setInstallations(detected.sort((a, b) => a.root.localeCompare(b.root)));
+  }
+
+  async function refreshHorizonDiscovery() {
+    setHorizonScanning(true);
+    setHorizonSettingsError("");
+    try {
+      const [foundInstallations, foundTools, foundRuntimes] = await Promise.all([
+        invoke<MinecraftInstallation[]>("scan_installations"),
+        invoke<HorizonToolDiscovery>("discover_horizon_tools"),
+        discoverJavaRuntimes(),
+      ]);
+      const detectedInstallations = [...foundInstallations];
+      let savedMinecraftSourceIsValid = Boolean(horizonMinecraftSourcePath);
+      const foundSavedSource = detectedInstallations.find((installation) => installation.root === horizonMinecraftSourcePath);
+      if (horizonMinecraftSourcePath && foundSavedSource && !foundSavedSource.versions.some((version) => version.id === "26.3")) {
+        setHorizonMinecraftSourcePath("");
+        savedMinecraftSourceIsValid = false;
+      } else if (horizonMinecraftSourcePath && !foundSavedSource) {
+        try {
+          const configured = await invoke<MinecraftInstallation>("inspect_installation", { path: horizonMinecraftSourcePath });
+          if (configured.versions.some((version) => version.id === "26.3")) detectedInstallations.push(configured);
+          else {
+            setHorizonMinecraftSourcePath("");
+            savedMinecraftSourceIsValid = false;
+          }
+        } catch {
+          setHorizonMinecraftSourcePath("");
+          savedMinecraftSourceIsValid = false;
+        }
+      }
+      setInstallations(detectedInstallations.sort((a, b) => a.root.localeCompare(b.root)));
+      setHorizonTools(foundTools);
+      setRuntimes(foundRuntimes);
+      if (!horizonClientPath && foundTools.clients[0]) setHorizonClientPath(foundTools.clients[0]);
+      if (!horizonPreparerPath && foundTools.preparers[0]) setHorizonPreparerPath(foundTools.preparers[0]);
+      if (!savedMinecraftSourceIsValid) {
+        const matching = detectedInstallations.find((installation) => installation.versions.some((version) => version.id === "26.3"));
+        if (matching) setHorizonMinecraftSourcePath(matching.root);
+      }
+    } catch (reason) {
+      setHorizonSettingsError(String(reason));
+    } finally {
+      setHorizonScanning(false);
+    }
+  }
+
+  async function addHorizonMinecraftFolder(path: string) {
+    const installation = await invoke<MinecraftInstallation>("inspect_installation", { path: path.trim() });
+    if (!installation.versions.some((version) => version.id === "26.3")) {
+      throw new Error("This folder does not contain Minecraft 26.3. Choose a folder with the 26.3 version installed.");
+    }
+    setInstallations((current) => [...current.filter((entry) => entry.root !== installation.root), installation].sort((a, b) => a.root.localeCompare(b.root)));
+    setHorizonMinecraftSourcePath(installation.root);
   }
 
   async function refreshRuntimes() {
@@ -749,8 +848,8 @@ function App() {
     setDownloadProgress({
       downloadId,
       versionId: "26.3 · Horizon",
-      phase: "Preparing official Minecraft files",
-      currentFile: "Downloading the client, libraries, assets, and Horizon preparation file from Mojang",
+      phase: "Preparing Minecraft 26.3 files",
+      currentFile: horizonMinecraftSourcePath ? "Checking the selected installation and fetching missing files" : "Fetching official files into Horizon’s private cache",
       completedFiles: 0,
       totalFiles: 0,
       downloadedBytes: 0,
@@ -763,6 +862,7 @@ function App() {
       const path = await invoke<string>("prepare_horizon_resources", {
         preparerPath: horizonPreparerPath.trim(),
         javaPath: horizonPrepareJavaPath,
+        minecraftSourcePath: horizonMinecraftSourcePath || null,
         downloadId,
       });
       setHorizonResourcesPath(path);
@@ -1078,6 +1178,13 @@ function App() {
               prepareJavaPath={horizonPrepareJavaPath}
               onPrepareJavaPathChange={setHorizonPrepareJavaPath}
               runtimes={runtimes}
+              installations={installations}
+              minecraftSourcePath={horizonMinecraftSourcePath}
+              onMinecraftSourceChange={setHorizonMinecraftSourcePath}
+              onAddMinecraftFolder={addHorizonMinecraftFolder}
+              onScanDevice={() => void refreshHorizonDiscovery()}
+              scanning={horizonScanning}
+              tools={horizonTools}
               onPrepareResources={() => void prepareHorizonResources()}
               preparing={horizonPreparing}
               progress={downloadProgress}

@@ -12,20 +12,36 @@ pub fn discover_installations() -> Vec<MinecraftInstallation> {
         candidates.push(PathBuf::from(custom));
     }
     if let Some(base) = BaseDirs::new() {
+        let home = base.home_dir();
         candidates.push(base.home_dir().join(".minecraft"));
         #[cfg(target_os = "linux")]
-        candidates.push(
-            base.home_dir()
-                .join(".var/app/com.mojang.Minecraft/.minecraft"),
-        );
+        {
+            candidates.push(home.join(".var/app/com.mojang.Minecraft/.minecraft"));
+            candidates.push(home.join(".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher"));
+            candidates.push(home.join(".var/app/org.polymc.PolyMC/data/PolyMC"));
+            candidates.push(home.join(".var/app/org.multimc.MultiMC/data/MultiMC"));
+        }
         #[cfg(target_os = "macos")]
-        candidates.push(
-            base.home_dir()
-                .join("Library/Application Support/minecraft"),
-        );
+        {
+            candidates.push(home.join("Library/Application Support/minecraft"));
+            candidates.push(home.join("Library/Application Support/PrismLauncher"));
+            candidates.push(home.join("Library/Application Support/PolyMC"));
+            candidates.push(home.join("Library/Application Support/MultiMC"));
+            candidates.push(home.join("Library/Application Support/ATLauncher"));
+        }
         #[cfg(target_os = "windows")]
         if let Some(app_data) = std::env::var_os("APPDATA") {
             candidates.push(PathBuf::from(app_data).join(".minecraft"));
+            candidates.push(PathBuf::from(app_data).join("PrismLauncher"));
+            candidates.push(PathBuf::from(app_data).join("PolyMC"));
+            candidates.push(PathBuf::from(app_data).join("MultiMC"));
+            candidates.push(PathBuf::from(app_data).join("ATLauncher"));
+        }
+
+        // Multi-instance launchers keep the game files in a known subfolder
+        // or at the instance folder itself.
+        for launcher_root in known_instance_roots(&base) {
+            candidates.extend(instance_game_directories(&launcher_root));
         }
     }
 
@@ -42,7 +58,70 @@ pub fn discover_installations() -> Vec<MinecraftInstallation> {
             found.push(installation);
         }
     }
+    found.sort_by(|left, right| left.root.cmp(&right.root));
     found
+}
+
+fn known_instance_roots(base: &BaseDirs) -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    let home = base.home_dir();
+    let mut roots = Vec::new();
+    #[cfg(target_os = "linux")]
+    roots.extend([
+        base.data_local_dir().join("PrismLauncher/instances"),
+        base.data_local_dir().join("PolyMC/instances"),
+        base.data_local_dir().join("MultiMC/instances"),
+        base.data_local_dir().join("ATLauncher/instances"),
+        base.data_local_dir().join("gdlauncher_carbon/data/instances"),
+        base.data_local_dir().join("gdlauncher_next/instances"),
+        home.join(".atlauncher/instances"),
+        home.join(".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances"),
+        home.join(".var/app/org.polymc.PolyMC/data/PolyMC/instances"),
+        home.join(".var/app/org.multimc.MultiMC/data/MultiMC/instances"),
+        home.join(".var/app/com.atlauncher.ATLauncher/data/ATLauncher/instances"),
+    ]);
+    #[cfg(target_os = "macos")]
+    roots.extend([
+        base.data_local_dir().join("PrismLauncher/instances"),
+        base.data_local_dir().join("PolyMC/instances"),
+        base.data_local_dir().join("MultiMC/instances"),
+        base.data_local_dir().join("ATLauncher/instances"),
+        base.data_local_dir().join("gdlauncher_carbon/data/instances"),
+    ]);
+    #[cfg(target_os = "windows")]
+    if let Some(app_data) = std::env::var_os("APPDATA") {
+        let app_data = PathBuf::from(app_data);
+        roots.extend([
+            app_data.join("PrismLauncher/instances"),
+            app_data.join("PolyMC/instances"),
+            app_data.join("MultiMC/instances"),
+            app_data.join("ATLauncher/instances"),
+            app_data.join("gdlauncher_carbon/data/instances"),
+            app_data.join("gdlauncher_next/instances"),
+        ]);
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn instance_game_directories(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else { continue };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let instance = entry.path();
+        candidates.push(instance.join(".minecraft"));
+        candidates.push(instance.join("minecraft"));
+        candidates.push(instance.join("instance"));
+        candidates.push(instance);
+    }
+    candidates
 }
 
 pub fn inspect_installation(path: &Path) -> Result<MinecraftInstallation> {
@@ -211,5 +290,21 @@ mod tests {
     fn sorts_release_versions_numerically_before_snapshots() {
         assert_eq!(compare_version_ids("1.21.1", "1.9.4"), std::cmp::Ordering::Greater);
         assert!(version_kind_rank("release") < version_kind_rank("snapshot"));
+    }
+
+    #[test]
+    fn finds_game_folders_inside_known_launcher_instances() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target")
+            .join(format!("launcher-scan-test-{}", uuid::Uuid::new_v4()));
+        let instance = root.join("Survival Pack");
+        std::fs::create_dir_all(instance.join(".minecraft/versions/26.3")).unwrap();
+        std::fs::create_dir_all(root.join("Not an instance")).unwrap();
+
+        let candidates = instance_game_directories(&root);
+        assert!(candidates.contains(&instance.join(".minecraft")));
+        assert!(candidates.contains(&instance.join("minecraft")));
+        assert!(candidates.contains(&instance));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

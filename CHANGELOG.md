@@ -2,6 +2,15 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.12] - Unreleased
+
+### Improved
+
+- Expanded automatic Minecraft discovery to the official launcher directory and common PrismLauncher, PolyMC, MultiMC, ATLauncher, and GDLauncher instance folders across supported desktop platforms.
+- Added Horizon settings to scan for local Minecraft 26.3 folders, add a custom folder, and select which installation can supply reusable files.
+- Reuse only Minecraft files that match Mojang's published checksums, copying them into OpnLauncher's private Horizon cache; missing files are downloaded and source installations are left unchanged.
+- Discover Horizon client and preparation tools on `PATH` at startup, with detected tool choices and an in-app rescan alongside Java and Minecraft discovery.
+
 ## [0.1.0-dev.11] - Unreleased
 
 ### Added

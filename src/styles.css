@@ -522,6 +522,8 @@ select.field-control option { color: var(--text); background: var(--panel); }
 .horizon-instance-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .quick-create-engine { width: 168px; min-height: 39px; padding: 0 10px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 9px; font-size: 12px; }
 .horizon-settings-content { gap: 20px; }
+.horizon-source-group { display: flex; flex-direction: column; gap: 10px; }
+.horizon-source-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
 .horizon-path-row .field-control { min-width: 0; flex: 1; }
 .horizon-path-help { display: flex; align-items: flex-start; gap: 8px; margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .horizon-path-help > svg { flex: 0 0 auto; margin-top: 1px; color: var(--accent); }

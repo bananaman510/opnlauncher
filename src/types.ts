@@ -47,6 +47,11 @@ export interface HorizonClientInfo {
   launchApi: string;
 }
 
+export interface HorizonToolDiscovery {
+  clients: string[];
+  preparers: string[];
+}
+
 export interface HorizonMod {
   fileName: string;
   id: string | null;

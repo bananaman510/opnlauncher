@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -10,12 +12,75 @@ use zip::ZipArchive;
 
 use crate::error::{LauncherError, Result};
 use crate::java;
-use crate::models::{Instance, InstanceEngine, OfflineProfile};
+use crate::models::{HorizonToolDiscovery, Instance, InstanceEngine, OfflineProfile};
 
 const HORIZON_GAME_VERSION: &str = "26.3";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_MOD_BYTES: u64 = 512 * 1024 * 1024;
 const HORIZON_PREPARE_JAVA_VERSION: u32 = 25;
+
+pub fn discover_tools() -> HorizonToolDiscovery {
+    let mut client_paths = BTreeSet::new();
+    let mut preparer_paths = BTreeSet::new();
+    let mut clients = Vec::new();
+    let mut preparers = Vec::new();
+    if let Some(path) = env::var_os("PATH") {
+        for directory in env::split_paths(&path) {
+            discover_tool_in_directory(
+                &directory,
+                &tool_file_name("horizon-client"),
+                &mut client_paths,
+                &mut clients,
+            );
+            discover_tool_in_directory(
+                &directory,
+                &tool_file_name("horizon-prepare"),
+                &mut preparer_paths,
+                &mut preparers,
+            );
+        }
+    }
+    HorizonToolDiscovery {
+        clients,
+        preparers,
+    }
+}
+
+fn discover_tool_in_directory(
+    directory: &Path,
+    name: &str,
+    seen: &mut BTreeSet<PathBuf>,
+    found: &mut Vec<String>,
+) {
+    let Ok(canonical) = fs::canonicalize(directory.join(name)) else {
+        return;
+    };
+    let Ok(metadata) = fs::metadata(&canonical) else {
+        return;
+    };
+    if metadata.is_file() && is_executable(&metadata) && seen.insert(canonical.clone()) {
+        found.push(canonical.to_string_lossy().into_owned());
+    }
+}
+
+fn tool_file_name(base: &str) -> String {
+    if cfg!(windows) {
+        format!("{base}.exe")
+    } else {
+        base.to_owned()
+    }
+}
+
+#[cfg(unix)]
+fn is_executable(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_metadata: &fs::Metadata) -> bool {
+    true
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

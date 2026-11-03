@@ -9,7 +9,9 @@ OpnLauncher treats Horizon as a separate Minecraft 26.3 engine. Horizon instance
 - JDK 25, including `javac`, for resource preparation.
 - A local, unverified OpnLauncher developer profile.
 
-Set the client and preparer executable paths on the Horizon page. Add a Java 25 executable under Settings → Java Manager, then select it as the preparation JDK. The first preparation downloads Mojang's official Minecraft 26.3 client, libraries, assets, and server file into OpnLauncher's local application data. The downloader validates upstream SHA-1 and size metadata. Horizon's preparer then builds the Rust-engine resources in a separate support folder. Repeating preparation verifies and reuses valid downloaded files and safely replaces the prepared resource directory after a successful run.
+OpnLauncher searches `PATH` for the client and preparer when it opens. You can choose a detected tool or enter its path on the Horizon page. Add a Java 25 executable under Settings → Java Manager, then select it as the preparation JDK.
+
+OpnLauncher also searches the standard Minecraft folder and common PrismLauncher, PolyMC, MultiMC, ATLauncher, and GDLauncher instance folders. You can rescan or add another Minecraft folder from Horizon settings. If a selected installation contains Minecraft 26.3, OpnLauncher copies only files that match Mojang's published SHA-1 and size metadata into its private Horizon cache. It never writes into the selected source folder. Missing or invalid source files are downloaded from Mojang into the private cache; if no source is selected, the complete set is fetched there. The required server file is included. Horizon's preparer then builds the Rust-engine resources in a separate support folder. Repeating preparation verifies and reuses valid cached files and safely replaces the prepared resource directory after a successful run.
 
 The Java and Horizon files are separate installations. Preparing Horizon does not replace or modify a standard Java instance, its mods, saves, or settings.
 

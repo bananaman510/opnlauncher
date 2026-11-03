@@ -19,7 +19,8 @@ use crate::loaders::{self, InstalledLoaderProfile, LoaderVersion};
 use crate::minecraft;
 use crate::mods::{self, ModDownloadProgress};
 use crate::models::{
-    Instance, InstanceEngine, JavaRuntime, LaunchExitEvent, LaunchLogEvent, LaunchStarted,
+    HorizonToolDiscovery, Instance, InstanceEngine, JavaRuntime, LaunchExitEvent, LaunchLogEvent,
+    LaunchStarted,
     MinecraftInstallation, OfflineProfile,
 };
 
@@ -37,6 +38,11 @@ fn list_instances(state: State<'_, AppState>) -> std::result::Result<Vec<Instanc
 #[tauri::command]
 fn scan_installations() -> Vec<MinecraftInstallation> {
     minecraft::discover_installations()
+}
+
+#[tauri::command]
+fn discover_horizon_tools() -> HorizonToolDiscovery {
+    horizon::discover_tools()
 }
 
 #[tauri::command]
@@ -534,6 +540,7 @@ fn inspect_horizon_client(path: String) -> std::result::Result<HorizonClientInfo
 async fn prepare_horizon_resources(
     preparer_path: String,
     java_path: String,
+    minecraft_source_path: Option<String>,
     download_id: String,
     state: State<'_, AppState>,
     app: AppHandle,
@@ -554,6 +561,7 @@ async fn prepare_horizon_resources(
 
     let data_dir = state.data_dir.clone();
     let worker_download_id = download_id.clone();
+    let source_root = minecraft_source_path.map(PathBuf::from);
     let progress_app = app.clone();
     let prepare_app = app.clone();
     let progress_sink: ProgressSink = Arc::new(move |mut progress: DownloadProgress| {
@@ -566,12 +574,13 @@ async fn prepare_horizon_resources(
         let resources_dir = horizon_dir.join("resources");
         fs::create_dir_all(&minecraft_dir).map_err(display_error)?;
 
-        downloads::install_horizon_version(
+        downloads::install_horizon_version_using_source(
             "26.3",
             &minecraft_dir,
             &worker_download_id,
             Arc::clone(&cancellation),
             progress_sink,
+            source_root.as_deref(),
         )
         .map_err(display_error)?;
         if cancellation.load(Ordering::Relaxed) {
@@ -1134,6 +1143,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_instances,
             scan_installations,
+            discover_horizon_tools,
             list_official_versions,
             search_mod_projects,
             get_mod_project,
