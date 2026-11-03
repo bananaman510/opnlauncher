@@ -236,6 +236,124 @@ async fn install_minecraft_version(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+async fn install_instance_setup(
+    instance_id: String,
+    minecraft_version: String,
+    loader: String,
+    loader_version: Option<String>,
+    java_path: Option<String>,
+    download_id: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> std::result::Result<Instance, String> {
+    Uuid::parse_str(&download_id).map_err(|_| "download identifier is invalid".to_owned())?;
+    if !minecraft::is_safe_id(&minecraft_version) {
+        return Err("Minecraft version identifier is invalid".to_owned());
+    }
+    if !matches!(loader.as_str(), "vanilla" | "fabric" | "forge") {
+        return Err("unsupported game loader".to_owned());
+    }
+    if loader != "vanilla" && loader_version.as_deref().is_none_or(str::is_empty) {
+        return Err("choose a compatible loader version".to_owned());
+    }
+    let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let active_downloads = Arc::clone(&state.active_downloads);
+    {
+        let mut active = active_downloads.lock().map_err(display_error)?;
+        if active.contains_key(&download_id) {
+            return Err("a download with this identifier is already active".to_owned());
+        }
+        active.insert(download_id.clone(), Arc::clone(&cancellation));
+    }
+
+    let database = Arc::clone(&state.database);
+    let game_dir = PathBuf::from(&instance.game_dir);
+    let worker_download_id = download_id.clone();
+    let worker_instance_id = instance_id.clone();
+    let worker_loader = loader.clone();
+    let worker_version = minecraft_version.clone();
+    let worker_loader_version = loader_version.clone();
+    let worker_java_path = java_path.map(PathBuf::from);
+    let progress_app = app.clone();
+    let phase_app = app.clone();
+    let progress_sink: ProgressSink = Arc::new(move |progress: DownloadProgress| {
+        let _ = progress_app.emit("download-progress", progress);
+    });
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let result = (|| {
+            match worker_loader.as_str() {
+                "vanilla" => {}
+                "fabric" => {
+                    let version = worker_loader_version.as_deref().expect("loader version validated above");
+                    if !loaders::fabric_versions(&worker_version)?.iter().any(|entry| entry.version == version) {
+                        return Err(crate::error::LauncherError::InvalidInput("the selected Fabric build is not compatible with this Minecraft version".to_owned()));
+                    }
+                }
+                "forge" => {
+                    let version = worker_loader_version.as_deref().expect("loader version validated above");
+                    if !loaders::forge_versions(&worker_version)?.iter().any(|entry| entry.version == version) {
+                        return Err(crate::error::LauncherError::InvalidInput("the selected Forge build is not compatible with this Minecraft version".to_owned()));
+                    }
+                    let java = worker_java_path.as_deref().ok_or_else(|| crate::error::LauncherError::InvalidInput("choose a Java runtime for the Forge installer".to_owned()))?;
+                    java::inspect_runtime(java)?;
+                }
+                _ => unreachable!("loader choice validated above"),
+            }
+            downloads::install_version_for_instance(
+                &worker_version,
+                &game_dir,
+                &worker_download_id,
+                Arc::clone(&cancellation),
+                progress_sink,
+            )?;
+            if cancellation.load(Ordering::Relaxed) {
+                return Err(crate::error::LauncherError::Unsupported("installation cancelled".to_owned()));
+            }
+            let selected_version = match worker_loader.as_str() {
+                "vanilla" => worker_version.clone(),
+                "fabric" => {
+                    let _ = phase_app.emit("download-progress", DownloadProgress {
+                        download_id: worker_download_id.clone(), version_id: worker_version.clone(),
+                        phase: "Installing Fabric loader".to_owned(), current_file: String::new(),
+                        completed_files: 0, total_files: 0, downloaded_bytes: 0, total_bytes: 0,
+                    });
+                    loaders::install_fabric(&game_dir, &worker_version, worker_loader_version.as_deref().expect("loader version validated above"))?
+                }
+                "forge" => {
+                    let _ = phase_app.emit("download-progress", DownloadProgress {
+                        download_id: worker_download_id.clone(), version_id: worker_version.clone(),
+                        phase: "Installing Forge loader".to_owned(), current_file: String::new(),
+                        completed_files: 0, total_files: 0, downloaded_bytes: 0, total_bytes: 0,
+                    });
+                    loaders::install_forge(
+                        &game_dir,
+                        &worker_version,
+                        worker_loader_version.as_deref().expect("loader version validated above"),
+                        worker_java_path.as_deref().expect("Java runtime validated above"),
+                    )?
+                }
+                _ => unreachable!("loader choice validated above"),
+            };
+            database.set_instance_version(&worker_instance_id, &selected_version)?;
+            let _ = phase_app.emit("download-progress", DownloadProgress {
+                download_id: worker_download_id.clone(), version_id: worker_version.clone(),
+                phase: "Installation complete".to_owned(), current_file: String::new(),
+                completed_files: 1, total_files: 1, downloaded_bytes: 0, total_bytes: 0,
+            });
+            Ok(selected_version)
+        })();
+        result
+    })
+    .await;
+    if let Ok(mut active) = active_downloads.lock() {
+        active.remove(&download_id);
+    }
+    result.map_err(display_error)?.map_err(display_error)?;
+    state.database.get_instance(&instance_id).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn cancel_download(download_id: String, state: State<'_, AppState>) -> std::result::Result<(), String> {
     let active = state.active_downloads.lock().map_err(display_error)?;
     let cancellation = active
@@ -649,6 +767,7 @@ pub fn run() {
             remove_mod_file,
             install_mod_version,
             install_minecraft_version,
+            install_instance_setup,
             cancel_download,
             inspect_installation,
             register_installation,

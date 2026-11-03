@@ -23,6 +23,7 @@ OpnLauncher is not affiliated with, endorsed by, or associated with Mojang Studi
 - Java manager with custom executable validation, a preferred Java runtime, and per-instance Java selection.
 - Saved defaults for new instance Java selection and memory allocation.
 - Fabric and Forge version browsing and installation for the selected Minecraft version; installed loader profiles can be selected without removing worlds or mods.
+- Per-instance game setup for a chosen Minecraft version and Vanilla, Fabric, or Forge, followed by mod search filtered to that instance's installed setup.
 - Visibly unverified local developer profiles with stable offline UUIDs, available in development and release builds.
 - Saved local profile and instance selection for convenient testing between launches.
 - Local launch logs and process exit status.
@@ -61,13 +62,13 @@ cargo test --no-default-features --lib --manifest-path src-tauri/Cargo.toml
 
 ## Local data
 
-The app stores its SQLite database, managed instance directories and downloaded vanilla game files, launch logs, and generated native-library cache in Tauri's application data directory. Registered existing installations continue to point at their existing game directories; downloads go into a separate new instance directory and do not modify those existing files.
+The app stores its SQLite database, managed instance directories and downloaded vanilla game files, launch logs, and generated native-library cache in Tauri's application data directory. Downloads from the general version browser go into a separate new instance directory. When you choose Game setup for a specific instance, verified Minecraft and loader files are added to that instance's selected game folder; existing files that do not match the expected integrity data are left untouched. A registered local folder may be shared with another instance, and the app warns when it detects this.
 
 Interface and default preferences, including theme, accent color, default Java, default memory, custom Java paths, instance favorites, and selected instance and local profile, are stored locally in the desktop WebView. They are not uploaded. Mod files are installed into the selected instance's `mods` folder. Fabric libraries and loader profiles, or Forge installer output, are written to the selected game folder after you choose Install. Existing worlds are kept in place.
 
 ## Development status
 
-The first milestone is still in progress. The vanilla installer handles official Minecraft version metadata, libraries, assets, and client files. Fabric and Forge loader management is implemented, while modpacks, Microsoft authentication, backups, and release packaging remain planned. Some very old Minecraft metadata formats may need additional support. Loader installation has compile and unit-test coverage, but has not yet been validated with a live in-game session on each supported loader. See the roadmap for the remaining work.
+The first milestone is still in progress. The vanilla installer handles official Minecraft version metadata, libraries, assets, and client files. Per-instance setup selects Minecraft, Fabric, or Forge before installation, and the Mods page follows the selected instance. Modpacks, Microsoft authentication, backups, and release packaging remain planned. Some very old Minecraft metadata formats may need additional support. Loader installation has compile and unit-test coverage, but has not yet been validated with a live in-game session on each supported loader. See the roadmap for the remaining work.
 
 See [CHANGELOG.md](CHANGELOG.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [PRIVACY.md](PRIVACY.md) for more detail.
 

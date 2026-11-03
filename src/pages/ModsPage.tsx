@@ -40,6 +40,7 @@ interface ModsPageProps {
   instances: Instance[];
   selectedInstanceId: string | null;
   onSelectInstance: (instanceId: string) => void;
+  onOpenInstances: () => void;
   curseForgeKey: string;
   onCurseForgeKeyChange: (value: string) => void;
 }
@@ -82,7 +83,7 @@ function modProjectKey(project: Pick<ModProject, "provider" | "id">): string {
   return `${project.provider}:${project.id}`;
 }
 
-export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInstance, curseForgeKey, onCurseForgeKeyChange }: ModsPageProps) {
+export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInstance, onOpenInstances, curseForgeKey, onCurseForgeKeyChange }: ModsPageProps) {
   const [libraryTab, setLibraryTab] = useState<LibraryTab>("discover");
   const [provider, setProvider] = useState<ModProvider>("modrinth");
   const [query, setQuery] = useState("");
@@ -152,7 +153,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
       : !instanceContext?.minecraftVersion
         ? "The selected instance needs readable Minecraft version metadata."
         : !instanceContext.loader
-          ? "Choose an existing Fabric, Forge, NeoForge, or Quilt instance to install mods."
+          ? "Install Fabric or Forge for this instance to enable mod installation."
           : instanceContext.loader !== loaderFilter
             ? "The selected mod loader does not match this instance."
             : provider === "curseforge" && !curseForgeKey.trim()
@@ -443,7 +444,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
         {instanceContext?.loader ? <span className="mod-loader-chip"><span className={`loader-mark loader-${instanceContext.loader}`} />{loaderName(instanceContext.loader)}</span> : <label className="mod-loader-filter"><span>Browse for</span><select aria-label="Choose a loader to browse" value={loaderFilter} onChange={(event) => { setLoaderFilter(event.target.value as LoaderFilter); restartSearch(); }}>{loaders.map((loader) => <option value={loader.id} key={loader.id}>{loader.name}</option>)}</select><ChevronDown size={14} /></label>}
       </section>
       {instanceContext?.sharedGameDirectory && <div className="mods-shared-warning"><CircleAlert size={15} /><span>This game folder is shared with another instance. Changes to its mods folder may affect both.</span></div>}
-      {instanceContext?.minecraftVersion && !instanceContext.loader && <div className="mods-loader-notice"><CircleAlert size={15} /><span>This instance is vanilla. You can browse builds for a loader, but OpnLauncher does not install loaders yet. Add an existing Fabric, Forge, NeoForge, or Quilt instance to enable mod installation.</span></div>}
+      {instanceContext && (!instanceContext.minecraftVersion || !instanceContext.loader) && <div className="mods-loader-notice"><CircleAlert size={15} /><span>{instanceContext.minecraftVersion ? "This instance is vanilla. Configure its Fabric or Forge version in Instances → Game setup; this mod list will then match it automatically." : "Choose a Minecraft version and Fabric or Forge loader for this instance in Instances → Game setup before installing mods."}</span><button type="button" className="text-link" onClick={onOpenInstances}>Configure instance <ArrowUpRight size={14} /></button></div>}
 
       <section className="mod-browser-shell">
         <div className="mod-browser-header">
@@ -569,7 +570,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
                     <span className="mod-version-check">{selectedVersionId === version.id ? <Check size={13} /> : <span />}</span><span className="mod-version-copy"><strong>{version.name}</strong><small>{version.versionNumber} · {version.releaseType} · {versionDate(version.datePublished)}</small><small>{version.files[0]?.name ?? "File name unavailable"}{version.files[0]?.size ? ` · ${formatBytes(version.files[0].size)}` : ""}</small></span>
                   </button>)}</div>}
               {selectedVersion && <div className="mod-version-dependencies"><span>Required dependencies</span><strong>{requiredDependencyCount === 0 ? "None listed" : `${requiredDependencyCount} project${requiredDependencyCount === 1 ? "" : "s"} · installed together`}</strong></div>}
-              {!instanceContext?.loader && <div className="mod-version-warning"><CircleAlert size={15} /><span>Mod installation needs a loader-equipped instance. Loader installation is not available in OpnLauncher yet.</span></div>}
+              {!instanceContext?.loader && <div className="mod-version-warning"><CircleAlert size={15} /><span>Mod installation needs Fabric or Forge installed for this instance.</span><button type="button" className="text-link" onClick={onOpenInstances}>Configure instance <ArrowUpRight size={14} /></button></div>}
               {instanceContext?.loader && instanceContext.loader !== loaderFilter && <div className="mod-version-warning"><CircleAlert size={15} /><span>This list is filtered for {loaderName(loaderFilter)}. Your instance uses {loaderName(instanceContext.loader)}.</span></div>}
               {instanceContext?.sharedGameDirectory && <div className="mod-version-warning"><CircleAlert size={15} /><span>This mods folder is shared with another instance.</span></div>}
               {installError && <div className="error-banner mod-error" role="alert"><CircleAlert size={15} /><span>{installError}</span></div>}

@@ -2,6 +2,19 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.8] - Unreleased
+
+### Added
+
+- Added per-instance game setup so each instance can choose a Minecraft version and Vanilla, Fabric, or Forge before installing the selected setup into its game folder.
+- Added a setup path for new empty instances and a Configure control on every instance. The selected Minecraft and loader metadata now drives the existing Mods page compatibility filters.
+- Kept setup downloads additive: existing files must pass upstream integrity checks before reuse, conflicting files are left unchanged, and existing saves and mods remain in place.
+
+### Fixed
+
+- Fixed Fabric installation for profile JSON that lists Maven coordinates and a repository URL instead of a `downloads.artifact` object. Fabric artifacts now resolve to safe Maven paths and are verified with profile checksums or same-repository SHA-1 sidecars.
+- Added compatible instance setup downloads for existing, non-empty game folders without requiring the folder to be cleared first.
+
 ## [0.1.0-dev.7] - Unreleased
 
 ### Added

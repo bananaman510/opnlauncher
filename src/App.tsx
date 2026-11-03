@@ -3,6 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import packageJson from "../package.json";
 import { DownloadsPage } from "./pages/DownloadsPage";
+import { InstanceSetupPanel, type InstanceSetupSelection } from "./pages/InstanceSetupPanel";
 import { ModsPage } from "./pages/ModsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { VersionsPage } from "./pages/VersionsPage";
@@ -36,6 +37,7 @@ import {
   Star,
   TerminalSquare,
   UsersRound,
+  Wrench,
   X,
   Zap,
 } from "lucide-react";
@@ -163,6 +165,7 @@ function App() {
   });
   const [selectedJavaPath, setSelectedJavaPath] = useState("");
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [showInstanceSetup, setShowInstanceSetup] = useState(false);
   const [showVersionInstallDialog, setShowVersionInstallDialog] = useState(false);
   const [showProfileForm, setShowProfileForm] = useState(false);
   const [instanceName, setInstanceName] = useState("");
@@ -463,6 +466,48 @@ function App() {
     }
   }
 
+  async function installInstanceSetup(selection: InstanceSetupSelection) {
+    const downloadId = crypto.randomUUID();
+    activeDownloadIdRef.current = downloadId;
+    setActiveDownloadId(downloadId);
+    setDownloadProgress({
+      downloadId,
+      versionId: selection.minecraftVersion,
+      phase: "Preparing instance setup",
+      currentFile: "",
+      completedFiles: 0,
+      totalFiles: 0,
+      downloadedBytes: 0,
+      totalBytes: 0,
+    });
+    setIsInstallingVersion(true);
+    try {
+      const updated = await invoke<Instance>("install_instance_setup", {
+        instanceId: selection.instanceId,
+        minecraftVersion: selection.minecraftVersion,
+        loader: selection.loader,
+        loaderVersion: selection.loaderVersion,
+        javaPath: selection.javaPath,
+        downloadId,
+      });
+      setInstances((current) => current.map((instance) => instance.id === updated.id ? updated : instance));
+      setSelectedInstanceId(updated.id);
+      setMemoryChoice(updated.memoryMb);
+      setDownloadProgress((current) => current ? { ...current, phase: "Installation complete" } : current);
+    } catch (reason) {
+      const message = String(reason);
+      setDownloadProgress((current) => current ? {
+        ...current,
+        phase: message.toLowerCase().includes("cancel") ? "Installation cancelled" : "Installation failed",
+      } : current);
+      throw reason;
+    } finally {
+      activeDownloadIdRef.current = null;
+      setActiveDownloadId(null);
+      setIsInstallingVersion(false);
+    }
+  }
+
   async function addDetectedInstallation(installation: MinecraftInstallation, versionId: string) {
     const suggested = `${versionId} · ${installation.root.split(/[\/]/).filter(Boolean).at(-1) ?? "Minecraft"}`;
     const name = window.prompt("Name this instance", suggested);
@@ -519,6 +564,8 @@ function App() {
       setSelectedInstanceId(created.id);
       setInstanceName("");
       setShowAddDialog(false);
+      setActivePage("instances");
+      setShowInstanceSetup(true);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -847,6 +894,7 @@ function App() {
                       <div className="details-card-topline"><span>INSTANCE SETTINGS</span><button className={`favorite-toggle ${favoriteIds.includes(selectedInstance.id) ? "is-favorite" : ""}`} type="button" onClick={() => toggleFavorite(selectedInstance.id)} aria-label={favoriteIds.includes(selectedInstance.id) ? "Remove from favorites" : "Add to favorites"} aria-pressed={favoriteIds.includes(selectedInstance.id)}><Star size={17} fill={favoriteIds.includes(selectedInstance.id) ? "currentColor" : "none"} /></button></div>
                       <div className="details-instance-title"><span className="details-game-icon"><Gamepad2 size={22} /></span><span><strong>{selectedInstance.name}</strong><small>{selectedInstance.versionId ?? "No game version selected"}</small></span></div>
                       <div className="details-divider" />
+                      <div className="instance-game-summary"><span><strong>Game setup</strong><small>{selectedInstance.versionId ? "Change Minecraft or loader version" : "Choose Minecraft and a loader to begin"}</small></span><button className="secondary-button" type="button" onClick={() => setShowInstanceSetup(true)}><Wrench size={14} /> Configure</button></div>
                       <label className="field-label" htmlFor="java-path">Java runtime</label>
                       <div className="select-wrap"><select id="java-path" className="field-control" value={selectedJavaPath} onChange={(event) => setSelectedJavaPath(event.target.value)}><option value="">Automatic detection</option>{runtimes.map((runtime) => <option key={runtime.path} value={runtime.path}>Java {runtime.majorVersion} · {runtime.vendor ?? "Runtime"}</option>)}</select><ChevronDown size={16} /></div>
                       {selectedJava ? <div className="runtime-description"><span className="runtime-dot" /><span><strong>{selectedJavaPath ? selectedJava.version : `Automatic · ${selectedJava.version}`}</strong><small title={selectedJava.path}>{selectedJava.path}</small></span><span className="runtime-architecture">{selectedJava.architecture ?? "Unknown"}</span></div> : <div className="inline-warning"><CircleAlert size={15} /><span>No Java runtime detected. Set JAVA_HOME, then refresh this page.</span></div>}
@@ -873,7 +921,7 @@ function App() {
           ) : activePage === "accounts" ? (
             <AccountsPage profiles={profiles} selectedProfileId={selectedProfileId} onSelect={(profileId) => setSelectedProfileId(profileId)} onCreate={() => setShowProfileForm(true)} />
           ) : activePage === "mods" ? (
-            <ModsPage desktop={desktop} instances={instances} selectedInstanceId={selectedInstanceId} onSelectInstance={setSelectedInstanceId} curseForgeKey={curseForgeApiKey} onCurseForgeKeyChange={setCurseForgeApiKey} />
+            <ModsPage desktop={desktop} instances={instances} selectedInstanceId={selectedInstanceId} onSelectInstance={setSelectedInstanceId} curseForgeKey={curseForgeApiKey} onCurseForgeKeyChange={setCurseForgeApiKey} onOpenInstances={() => setActivePage("instances")} />
           ) : activePage === "settings" ? (
             <SettingsPage
               runtimes={runtimes}
@@ -920,13 +968,13 @@ function App() {
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAddDialog(false); }}>
           <section className="modal-card add-instance-modal" role="dialog" aria-modal="true" aria-labelledby="add-modal-title">
             <div className="modal-header"><div><p className="eyebrow"><Plus size={14} /> BUILD YOUR LIBRARY</p><h2 id="add-modal-title">Add an instance</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setShowAddDialog(false)}><X size={18} /></button></div>
-            <p className="modal-copy">Each instance gets its own folder, settings, and worlds. Existing game files are only registered; they are not moved.</p>
+            <p className="modal-copy">Each instance has its own game setup and local settings. Create one, then choose its Minecraft version and loader before installing.</p>
+            <form className="new-instance-config-form" onSubmit={(event) => void createBlankInstance(event)}><label className="field-label" htmlFor="new-config-instance-name">New instance name</label><div><input id="new-config-instance-name" className="field-control" value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder="For example, Fabric Survival" maxLength={48} /><button className="play-button" type="submit" disabled={isBusy || !instanceName.trim()}><Wrench size={15} /> Create &amp; configure</button></div><small>Next, choose a Minecraft version and Vanilla, Fabric, or Forge for this instance.</small></form>
             <button className="version-download-callout" type="button" onClick={() => { setShowAddDialog(false); setActivePage("versions"); }} disabled={!desktop}><span className="version-note-icon"><ArrowDownToLine size={17} /></span><span><strong>Install an official version</strong><small>Choose a release, snapshot, or historical version.</small></span><ArrowRight size={17} /></button>
             <div className="modal-section-heading"><span>EXISTING INSTALLATIONS</span><button className="text-link" type="button" onClick={() => void refreshInstallations()}><FolderOpen size={14} /> Rescan</button></div>
             {installations.length > 0 ? <div className="detected-list">{installations.map((installation) => <div className="detected-install" key={installation.root}><div className="detected-root"><HardDrive size={16} /><span title={installation.root}>{installation.root}</span></div><div className="detected-version-list">{installation.versions.slice(0, 6).map((version) => <button className="version-option" key={version.id} type="button" onClick={() => void addDetectedInstallation(installation, version.id)}><span><strong>{version.id}</strong><small>{version.kind}</small></span><Plus size={16} /></button>)}</div></div>)}</div> : <div className="no-detected"><FolderOpen size={19} /><span>No standard installation found. You can still download a version above or inspect a folder below.</span></div>}
             <label className="field-label" htmlFor="custom-install-path">Inspect another game folder</label><div className="custom-path-row"><input id="custom-install-path" className="field-control" value={installPath} onChange={(event) => setInstallPath(event.target.value)} placeholder="Path to .minecraft" /><button className="secondary-button" type="button" onClick={() => void inspectCustomInstallation()} disabled={!installPath.trim() || isBusy}>Inspect</button></div>
             {inspectedInstall && <div className="inspected-version"><label className="field-label" htmlFor="version-choice">Choose installed version</label><select id="version-choice" className="field-control" value={versionChoice} onChange={(event) => setVersionChoice(event.target.value)}>{inspectedInstall.versions.map((version) => <option value={version.id} key={version.id}>{version.id} · {version.kind}</option>)}</select><button className="play-button" type="button" onClick={() => void addInspectedInstallation()}><Plus size={16} /> Add selected version</button></div>}
-            <details className="empty-instance-details"><summary>Create an empty instance instead</summary><form onSubmit={(event) => void createBlankInstance(event)}><input className="field-control" value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder="Instance name" maxLength={48} /><button className="secondary-button" type="submit" disabled={isBusy || !instanceName.trim()}>Create</button></form></details>
           </section>
         </div>
       )}
@@ -941,6 +989,27 @@ function App() {
               {isInstallingVersion && downloadProgress && <div className="install-progress-card"><div><LoaderCircle className="spin" size={16} /><strong>{downloadProgress.phase}</strong><span>{downloadProgress.completedFiles} / {downloadProgress.totalFiles} files</span></div><div className="download-progress-track"><span style={{ width: `${downloadPercent}%` }} /></div>{downloadProgress.currentFile && <small>{downloadProgress.currentFile}</small>}</div>}
               <div className="version-install-actions">{isInstallingVersion ? <button className="secondary-button" type="button" onClick={() => void cancelDownload()}>Cancel download</button> : <button className="play-button" type="submit" disabled={!versionInstanceName.trim()}><ArrowDownToLine size={16} /> Install version</button>}</div>
             </form>
+          </section>
+        </div>
+      )}
+
+      {showInstanceSetup && selectedInstance && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isInstallingVersion) setShowInstanceSetup(false); }}>
+          <section className="modal-card instance-setup-modal" role="dialog" aria-modal="true" aria-labelledby="instance-setup-modal-title">
+            <div className="modal-header"><div><p className="eyebrow"><Wrench size={14} /> INSTANCE CONFIGURATION</p><h2 id="instance-setup-modal-title">Configure {selectedInstance.name}</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setShowInstanceSetup(false)} disabled={isInstallingVersion}><X size={18} /></button></div>
+            <InstanceSetupPanel
+              key={selectedInstance.id}
+              instance={selectedInstance}
+              versions={officialVersions}
+              versionsLoading={versionsLoading}
+              versionsError={versionsError}
+              onRefreshVersions={() => void loadOfficialVersions()}
+              runtimes={runtimes}
+              selectedJavaPath={selectedJavaPath}
+              desktop={desktop}
+              installing={isInstallingVersion}
+              onInstall={installInstanceSetup}
+            />
           </section>
         </div>
       )}

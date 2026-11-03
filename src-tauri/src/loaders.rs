@@ -15,6 +15,7 @@ use crate::java;
 use crate::minecraft::is_safe_id;
 
 const FABRIC_META: &str = "https://meta.fabricmc.net";
+const FABRIC_MAVEN: &str = "https://maven.fabricmc.net/";
 const FORGE_MAVEN: &str = "https://maven.minecraftforge.net";
 const MAX_METADATA_BYTES: usize = 12 * 1024 * 1024;
 const MAX_INSTALLER_BYTES: usize = 128 * 1024 * 1024;
@@ -212,10 +213,8 @@ pub fn install_fabric(game_dir: &Path, game_version: &str, loader_version: &str)
         return Err(LauncherError::Unsupported("Fabric profile has an invalid library count".to_owned()));
     }
     for library in libraries {
-        let Some(artifact) = library.get("downloads").and_then(|value| value.get("artifact")) else {
-            return Err(LauncherError::Unsupported("Fabric library metadata is missing its downloadable artifact".to_owned()));
-        };
-        install_fabric_library(&client, &root, artifact)?;
+        let artifact = fabric_library_artifact(library)?;
+        install_fabric_library(&client, &root, &artifact)?;
     }
     let object = profile.as_object_mut().ok_or_else(|| LauncherError::Unsupported("Fabric profile is not an object".to_owned()))?;
     object.insert("jar".to_owned(), Value::String(game_version.to_owned()));
@@ -376,41 +375,92 @@ fn normalize_inherited_loader_profile(
     Ok(())
 }
 
-fn install_fabric_library(client: &Client, root: &Path, artifact: &Value) -> Result<()> {
-    let relative = artifact.get("path").and_then(Value::as_str)
-        .ok_or_else(|| LauncherError::Unsupported("Fabric library has no relative path".to_owned()))?;
-    let destination = safe_destination(root, &format!("libraries/{relative}"))?;
-    let expected_sha1 = artifact.get("sha1").and_then(Value::as_str)
-        .ok_or_else(|| LauncherError::Unsupported("Fabric library has no SHA-1 checksum".to_owned()))?.to_ascii_lowercase();
-    if !is_sha1(&expected_sha1) {
+struct FabricLibraryArtifact {
+    path: String,
+    url: reqwest::Url,
+    sha1: Option<String>,
+    size: Option<u64>,
+}
+
+fn fabric_library_artifact(library: &Value) -> Result<FabricLibraryArtifact> {
+    let artifact = library.get("downloads").and_then(|value| value.get("artifact"));
+    let path = artifact
+        .and_then(|value| value.get("path"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| library.get("name").and_then(Value::as_str).and_then(|name| crate::launch::maven_path(name).ok()).map(|path| path.to_string_lossy().into_owned()))
+        .ok_or_else(|| LauncherError::Unsupported("Fabric library has no safe Maven artifact path".to_owned()))?;
+    if !is_safe_relative_path(&path) {
+        return Err(LauncherError::Unsupported("Fabric library has an unsafe artifact path".to_owned()));
+    }
+    let repository = library.get("url").and_then(Value::as_str).unwrap_or(FABRIC_MAVEN);
+    let repository_url = trusted_fabric_url(repository)?;
+    let url = match artifact.and_then(|value| value.get("url")).and_then(Value::as_str) {
+        Some(url) => trusted_fabric_url(url)?,
+        None => trusted_fabric_url(repository_url.join(&path).map_err(|_| LauncherError::Unsupported("Fabric library URL could not be constructed".to_owned()))?.as_str())?,
+    };
+    let sha1 = artifact.and_then(|value| value.get("sha1")).and_then(Value::as_str).map(|value| value.to_ascii_lowercase());
+    if sha1.as_deref().is_some_and(|value| !is_sha1(value)) {
         return Err(LauncherError::Unsupported("Fabric library has an invalid SHA-1 checksum".to_owned()));
     }
-    let size = artifact.get("size").and_then(Value::as_u64)
-        .ok_or_else(|| LauncherError::Unsupported("Fabric library has no valid size".to_owned()))?;
-    if size > MAX_LIBRARY_BYTES as u64 {
+    let size = artifact.and_then(|value| value.get("size")).and_then(Value::as_u64);
+    if size.is_some_and(|size| size > MAX_LIBRARY_BYTES as u64) {
         return Err(LauncherError::Unsupported("Fabric library exceeds the download size limit".to_owned()));
     }
-    let url = artifact.get("url").and_then(Value::as_str)
-        .ok_or_else(|| LauncherError::Unsupported("Fabric library has no HTTPS download URL".to_owned()))?;
-    let parsed = reqwest::Url::parse(url).map_err(|_| LauncherError::Unsupported("Fabric library URL is invalid".to_owned()))?;
-    if parsed.scheme() != "https" || !matches!(parsed.host_str(), Some("maven.fabricmc.net" | "libraries.minecraft.net")) {
+    Ok(FabricLibraryArtifact { path, url, sha1, size })
+}
+
+fn trusted_fabric_url(value: &str) -> Result<reqwest::Url> {
+    let parsed = reqwest::Url::parse(value).map_err(|_| LauncherError::Unsupported("Fabric library URL is invalid".to_owned()))?;
+    if parsed.scheme() != "https"
+        || !matches!(parsed.host_str(), Some("maven.fabricmc.net" | "libraries.minecraft.net"))
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
         return Err(LauncherError::Unsupported("Fabric library points to an untrusted download host".to_owned()));
     }
+    Ok(parsed)
+}
+
+fn install_fabric_library(client: &Client, root: &Path, artifact: &FabricLibraryArtifact) -> Result<()> {
+    let destination = safe_destination(root, &format!("libraries/{}", artifact.path))?;
+    let expected_sha1 = match artifact.sha1.as_deref() {
+        Some(sha1) => sha1.to_owned(),
+        None => fetch_sha1_sidecar(client, &artifact.url)?,
+    };
     if let Ok(metadata) = fs::symlink_metadata(&destination) {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(LauncherError::Unsupported(format!("Fabric library destination {} is not a regular file", destination.display())));
         }
-        if metadata.len() <= MAX_LIBRARY_BYTES as u64 && sha1_hex(&fs::read(&destination)?) == expected_sha1 {
+        if metadata.len() <= MAX_LIBRARY_BYTES as u64
+            && artifact.size.is_none_or(|size| metadata.len() == size)
+            && sha1_hex(&fs::read(&destination)?) == expected_sha1
+        {
             return Ok(());
         }
-        return Err(LauncherError::Unsupported(format!("existing library {} has a different checksum; it was left unchanged", relative)));
+        return Err(LauncherError::Unsupported(format!("existing library {} has a different checksum; it was left unchanged", artifact.path)));
     }
-    let response = client.get(parsed).send().and_then(Response::error_for_status).map_err(network_error)?;
+    let response = client.get(artifact.url.clone()).send().and_then(Response::error_for_status).map_err(network_error)?;
     let bytes = read_limited(response, MAX_LIBRARY_BYTES)?;
-    if bytes.len() as u64 != size || sha1_hex(&bytes) != expected_sha1 {
-        return Err(LauncherError::Unsupported(format!("Fabric library {relative} failed its integrity check")));
+    if artifact.size.is_some_and(|size| bytes.len() as u64 != size) || sha1_hex(&bytes) != expected_sha1 {
+        return Err(LauncherError::Unsupported(format!("Fabric library {} failed its integrity check", artifact.path)));
     }
     write_new_file(&destination, &bytes)
+}
+
+fn fetch_sha1_sidecar(client: &Client, artifact_url: &reqwest::Url) -> Result<String> {
+    let checksum_url = format!("{artifact_url}.sha1");
+    let response = client.get(&checksum_url).send().and_then(Response::error_for_status).map_err(network_error)?;
+    let body = String::from_utf8(read_limited(response, 256)?)
+        .map_err(|_| LauncherError::Unsupported("Fabric Maven returned an invalid checksum".to_owned()))?;
+    let checksum = body.split_whitespace().next().unwrap_or_default().to_ascii_lowercase();
+    if !is_sha1(&checksum) {
+        return Err(LauncherError::Unsupported("Fabric Maven returned an invalid checksum".to_owned()));
+    }
+    Ok(checksum)
 }
 
 fn install_profile_metadata(root: &Path, version_id: &str, profile: &Value, game_version: &str, loader_version: &str) -> Result<()> {
@@ -707,6 +757,52 @@ mod tests {
         assert!(is_safe_relative_path("libraries/net/fabricmc/loader.jar"));
         assert!(!is_safe_relative_path("../../outside.jar"));
         assert!(!is_safe_relative_path("/outside.jar"));
+    }
+
+    #[test]
+    fn supports_fabric_metadata_with_maven_coordinates_and_repository_url() {
+        let library = serde_json::json!({
+            "name": "net.fabricmc:fabric-loader:0.16.14",
+            "url": "https://maven.fabricmc.net/"
+        });
+        let artifact = fabric_library_artifact(&library).unwrap();
+        assert_eq!(artifact.path, "net/fabricmc/fabric-loader/0.16.14/fabric-loader-0.16.14.jar");
+        assert_eq!(artifact.url.as_str(), "https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.14/fabric-loader-0.16.14.jar");
+        assert!(artifact.sha1.is_none());
+        assert!(artifact.size.is_none());
+    }
+
+    #[test]
+    fn supports_fabric_metadata_with_download_artifact_details() {
+        let library = serde_json::json!({
+            "name": "net.fabricmc:fabric-loader:0.16.14",
+            "downloads": {
+                "artifact": {
+                    "path": "custom/fabric-loader.jar",
+                    "url": "https://maven.fabricmc.net/custom/fabric-loader.jar",
+                    "sha1": "0123456789012345678901234567890123456789",
+                    "size": 123
+                }
+            }
+        });
+        let artifact = fabric_library_artifact(&library).unwrap();
+        assert_eq!(artifact.path, "custom/fabric-loader.jar");
+        assert_eq!(artifact.sha1.as_deref(), Some("0123456789012345678901234567890123456789"));
+        assert_eq!(artifact.size, Some(123));
+    }
+
+    #[test]
+    fn rejects_fabric_library_paths_and_repositories_outside_the_allowlist() {
+        let library = serde_json::json!({
+            "name": "example:library:1.0",
+            "url": "https://example.com/maven/"
+        });
+        assert!(fabric_library_artifact(&library).is_err());
+        let library = serde_json::json!({
+            "name": "../../escape:library:1.0",
+            "url": "https://maven.fabricmc.net/"
+        });
+        assert!(fabric_library_artifact(&library).is_err());
     }
 
     #[test]

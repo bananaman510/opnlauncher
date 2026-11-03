@@ -283,6 +283,11 @@ kbd { flex: 0 0 auto; padding: 3px 5px; color: var(--faint); background: var(--p
 .instance-collection.as-list .library-add-tile > span { margin: 0; }
 .instance-collection.as-list .library-add-tile small { margin-left: auto; }
 .instance-settings-card { min-width: 0; padding: 17px; background: var(--panel); border: 1px solid var(--line-soft); border-radius: 15px; }
+.instance-game-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -1px 0 16px; padding: 12px; background: var(--panel-soft); border: 1px solid var(--line-soft); border-radius: 11px; }
+.instance-game-summary > span { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.instance-game-summary strong { color: var(--text); font-size: 12px; }
+.instance-game-summary small { color: var(--muted); font-size: 11px; }
+.instance-game-summary .secondary-button { min-height: 34px; flex: 0 0 auto; padding: 0 10px; font-size: 11px; }
 .details-card-topline { display: flex; align-items: center; justify-content: space-between; color: var(--faint); font-size: 11px; font-weight: 750; letter-spacing: 1.1px; }
 .details-card-topline .favorite-toggle { margin: -6px -7px -6px 0; }
 .details-instance-title { display: flex; align-items: center; gap: 11px; margin: 2px 0 16px; }
@@ -496,6 +501,36 @@ select.field-control option { color: var(--text); background: var(--panel); }
 .empty-instance-details form { display: flex; gap: 8px; margin-top: 12px; }
 .empty-instance-details form input { flex: 1; }
 .version-install-modal { width: min(500px, 100%); }
+.instance-setup-modal { width: min(680px, 100%); max-height: calc(100vh - 32px); overflow: auto; }
+.new-instance-config-form { display: flex; flex-direction: column; gap: 8px; margin: 15px 0 18px; padding: 14px; background: var(--panel-soft); border: 1px solid var(--line-soft); border-radius: 12px; }
+.new-instance-config-form .field-label { margin-bottom: 0; }
+.new-instance-config-form > div { display: flex; gap: 8px; }
+.new-instance-config-form .field-control { min-width: 0; flex: 1; min-height: 40px; }
+.new-instance-config-form .play-button { min-height: 40px; flex: 0 0 auto; padding: 0 12px; }
+.new-instance-config-form > small { color: var(--faint); font-size: 11px; line-height: 1.4; }
+.instance-setup-modal .modal-header { margin-bottom: 17px; }
+.instance-setup-panel { display: flex; flex-direction: column; gap: 13px; }
+.instance-setup-heading { display: flex; align-items: center; gap: 10px; }
+.instance-setup-icon { display: grid; width: 36px; height: 36px; flex: 0 0 auto; place-items: center; color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-edge); border-radius: 11px; }
+.instance-setup-heading > span:nth-child(2) { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.instance-setup-heading strong { font-size: 14px; }
+.instance-setup-heading small, .instance-setup-copy, .instance-setup-integrity { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.instance-setup-heading > svg { flex: 0 0 auto; color: var(--accent); }
+.instance-setup-copy { margin: -3px 0 1px; }
+.instance-setup-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.instance-setup-field { display: flex; min-width: 0; flex-direction: column; gap: 7px; color: var(--muted); font-size: 12px; font-weight: 640; }
+.instance-setup-field:first-child { grid-column: 1 / -1; }
+.instance-setup-field .select-wrap { width: 100%; }
+.instance-setup-field .field-control { min-height: 40px; font-size: 12px; }
+.instance-setup-field .instance-version-search { min-height: 36px; font-size: 12px; }
+.instance-setup-actions { display: flex; justify-content: space-between; gap: 10px; padding-top: 2px; }
+.instance-setup-actions .play-button { min-height: 40px; padding: 0 14px; }
+.instance-setup-error, .instance-setup-success { display: flex; align-items: flex-start; gap: 7px; margin: 0; font-size: 12px; line-height: 1.5; }
+.instance-setup-error { color: var(--danger); }
+.instance-setup-success { color: #83d9ae; }
+.instance-setup-error > svg, .instance-setup-success > svg { flex: 0 0 auto; margin-top: 1px; }
+.instance-setup-error .text-link { margin-left: auto; flex: 0 0 auto; }
+.instance-setup-integrity { margin-top: -2px; }
 .version-install-form { display: flex; flex-direction: column; gap: 9px; }
 .version-install-form .field-label { margin: 0; }
 .version-install-actions { display: flex; justify-content: flex-end; margin-top: 5px; }
@@ -922,6 +957,8 @@ select.field-control option { color: var(--text); background: var(--panel); }
 .mods-shared-warning { display: flex; align-items: center; gap: 8px; margin: -4px 0 13px; padding: 9px 12px; color: var(--warning); background: color-mix(in srgb, var(--warning) 7%, var(--panel)); border: 1px solid color-mix(in srgb, var(--warning) 18%, var(--line)); border-radius: 9px; font-size: 12px; }
 .mods-loader-notice { display: flex; align-items: flex-start; gap: 8px; margin: -4px 0 13px; padding: 10px 12px; color: var(--muted); background: color-mix(in srgb, var(--accent) 5%, var(--panel)); border: 1px solid var(--line-soft); border-radius: 9px; font-size: 12px; line-height: 1.55; }
 .mods-loader-notice svg { flex: 0 0 auto; color: var(--accent); }
+.mods-loader-notice > span { flex: 1; }
+.mods-loader-notice .text-link { flex: 0 0 auto; white-space: nowrap; }
 .mod-browser-shell { overflow: hidden; background: var(--panel); border: 1px solid var(--line-soft); border-radius: 17px; box-shadow: 0 16px 42px #00000012; }
 .mod-browser-header { display: flex; min-height: 63px; align-items: center; justify-content: space-between; gap: 18px; padding: 0 18px; border-bottom: 1px solid var(--line-soft); }
 .mod-tabs { display: flex; height: 63px; align-items: stretch; gap: 21px; }
@@ -1131,6 +1168,14 @@ select.field-control option { color: var(--text); background: var(--panel); }
 }
 
 @media (max-width: 600px) {
+  .instance-setup-fields { grid-template-columns: 1fr; }
+  .instance-setup-field:first-child { grid-column: auto; }
+  .instance-setup-actions { align-items: stretch; flex-direction: column; }
+  .instance-setup-actions > button { justify-content: center; }
+  .new-instance-config-form > div { align-items: stretch; flex-direction: column; }
+  .new-instance-config-form .play-button { justify-content: center; }
+  .mods-loader-notice { flex-wrap: wrap; }
+  .mods-loader-notice .text-link { margin-left: 22px; }
   .mods-page-heading h1 { font-size: 30px; }
   .mods-heading-badge { display: none; }
   .mod-instance-context { gap: 9px; padding: 11px; }

@@ -221,6 +221,27 @@ pub fn install_version(
     cancelled: Arc<AtomicBool>,
     sink: ProgressSink,
 ) -> Result<()> {
+    install_version_with_policy(version_id, install_root, download_id, cancelled, sink, true)
+}
+
+pub fn install_version_for_instance(
+    version_id: &str,
+    install_root: &Path,
+    download_id: &str,
+    cancelled: Arc<AtomicBool>,
+    sink: ProgressSink,
+) -> Result<()> {
+    install_version_with_policy(version_id, install_root, download_id, cancelled, sink, false)
+}
+
+fn install_version_with_policy(
+    version_id: &str,
+    install_root: &Path,
+    download_id: &str,
+    cancelled: Arc<AtomicBool>,
+    sink: ProgressSink,
+    require_empty_root: bool,
+) -> Result<()> {
     if !is_safe_id(version_id) {
         return Err(LauncherError::InvalidInput(
             "Minecraft version identifier is invalid".to_owned(),
@@ -229,7 +250,11 @@ pub fn install_version(
     Uuid::parse_str(download_id).map_err(|_| {
         LauncherError::InvalidInput("download identifier is invalid".to_owned())
     })?;
-    validate_empty_root(install_root)?;
+    if require_empty_root {
+        validate_empty_root(install_root)?;
+    } else {
+        validate_install_root(install_root)?;
+    }
 
     let client = build_client()?;
     let manifest = parse_version_manifest(&fetch_bytes(&client, VERSION_MANIFEST_URL)?)?;
@@ -978,11 +1003,20 @@ fn safe_target(root: &Path, relative: &Path) -> Result<PathBuf> {
 }
 
 fn validate_empty_root(root: &Path) -> Result<()> {
+    validate_install_root(root)?;
+    validate_root_contents(fs::read_dir(root)?.next().is_none(), true)
+}
+
+fn validate_install_root(root: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(root)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(LauncherError::Unsupported("installation directory is not a safe directory".to_owned()));
     }
-    if fs::read_dir(root)?.next().is_some() {
+    Ok(())
+}
+
+fn validate_root_contents(is_empty: bool, require_empty: bool) -> Result<()> {
+    if require_empty && !is_empty {
         return Err(LauncherError::Unsupported("installation directory must be empty".to_owned()));
     }
     Ok(())
@@ -1039,6 +1073,13 @@ mod tests {
         ] {
             assert!(parse_version_manifest(bytes).is_err());
         }
+    }
+
+    #[test]
+    fn only_new_instances_require_an_empty_install_folder() {
+        assert!(validate_root_contents(false, false).is_ok());
+        assert!(validate_root_contents(false, true).is_err());
+        assert!(validate_root_contents(true, true).is_ok());
     }
 
     #[test]
