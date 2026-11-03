@@ -2,6 +2,17 @@
 
 All notable project changes are recorded here. This project follows Semantic Versioning; versions are not tagged or released automatically.
 
+## [0.1.0-dev.5] - Unreleased
+
+### Improved
+
+- Increased small interface text sizes across the launcher for easier reading.
+- Made mod project screenshots more prominent in search cards and project icons visible as large artwork when a gallery image is unavailable.
+
+### Fixed
+
+- Parsed Modrinth search gallery URLs, which are returned as strings, so project screenshots now appear in search results. Featured screenshots are shown first while image-host validation remains enforced.
+
 ## [0.1.0-dev.4] - Unreleased
 
 ### Added

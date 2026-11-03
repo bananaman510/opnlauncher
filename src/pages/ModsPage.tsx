@@ -382,7 +382,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
                   {isLoading && projects.length === 0 ? <div className="mod-loading-state"><LoaderCircle className="spin" size={23} /><span>Finding matching projects…</span></div>
                     : filteredProjects.length ? <div className="mod-project-grid">{filteredProjects.map((project) => <article className="mod-project-card" key={`${project.provider}:${project.id}`}>
                       <button type="button" className="mod-card-cover" onClick={() => void openProject(project)} aria-label={`View ${project.title}`}>
-                        {project.gallery[0]?.url ? <img src={project.gallery[0].url} loading="lazy" alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <span className="mod-cover-art"><span /><span /><span /></span>}
+                        {project.gallery[0]?.url ? <img className="mod-cover-image" src={project.gallery[0].url} loading="lazy" alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : <span className="mod-cover-art"><span /><span /><span />{project.iconUrl && <img className="mod-cover-project-icon" src={project.iconUrl} loading="lazy" alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} />}</span>}
                         <span className="mod-cover-shade" />
                         <span className="mod-cover-count"><Download size={13} /> {formatDownloads(project.downloads)}</span>
                         <span className={`mod-provider-pill provider-pill-${project.provider}`}>{project.provider === "modrinth" ? "MODRINTH" : "CURSEFORGE"}</span>

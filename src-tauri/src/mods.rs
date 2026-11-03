@@ -787,10 +787,18 @@ fn parse_modrinth_project(value: &Value, default_type: &str) -> Option<ModProjec
     let title = value.get("title")?.as_str()?.to_owned();
     let project_type = value.get("project_type").and_then(Value::as_str).unwrap_or(default_type);
     let slug = value.get("slug").and_then(Value::as_str).unwrap_or(&id).to_owned();
-    let gallery = value.get("gallery").and_then(Value::as_array).into_iter().flatten().filter_map(|item| {
-        let url = item.get("url")?.as_str()?;
+    let mut gallery = value.get("gallery").and_then(Value::as_array).into_iter().flatten().filter_map(|item| {
+        let url = item.as_str().or_else(|| item.get("url")?.as_str())?;
         safe_image_url(url).then(|| ModGalleryImage { url: url.to_owned(), title: item.get("title").and_then(Value::as_str).map(str::to_owned), description: item.get("description").and_then(Value::as_str).map(str::to_owned) })
-    }).collect();
+    }).collect::<Vec<_>>();
+    if let Some(featured_url) = value.get("featured_gallery").and_then(Value::as_str).filter(|url| safe_image_url(url)) {
+        if let Some(index) = gallery.iter().position(|image| image.url == featured_url) {
+            let featured = gallery.remove(index);
+            gallery.insert(0, featured);
+        } else {
+            gallery.insert(0, ModGalleryImage { url: featured_url.to_owned(), title: None, description: None });
+        }
+    }
     Some(ModProject {
         provider: "modrinth".to_owned(),
         id,
@@ -1156,6 +1164,40 @@ mod tests {
         assert!(!safe_image_url("https://example.invalid/icon.png"));
         assert!(safe_project_url("https://www.curseforge.com/minecraft/mc-mods/example", "curseforge"));
         assert!(!safe_project_url("https://example.invalid/", "curseforge"));
+    }
+
+    #[test]
+    fn parses_modrinth_search_and_project_gallery_images() {
+        let search_hit = serde_json::json!({
+            "project_id": "example",
+            "project_type": "mod",
+            "title": "Example Mod",
+            "author": "Example Author",
+            "description": "A sample project.",
+            "icon_url": "https://cdn.modrinth.com/data/example/icon.png",
+            "gallery": [
+                "https://cdn.modrinth.com/data/example/images/first.png",
+                "https://cdn.modrinth.com/data/example/images/featured.png",
+                "https://example.invalid/outside.png"
+            ],
+            "featured_gallery": "https://cdn.modrinth.com/data/example/images/featured.png"
+        });
+        let parsed = parse_modrinth_project(&search_hit, "mod").unwrap();
+        assert_eq!(parsed.gallery.len(), 2);
+        assert_eq!(parsed.gallery[0].url, "https://cdn.modrinth.com/data/example/images/featured.png");
+        assert_eq!(parsed.gallery[1].url, "https://cdn.modrinth.com/data/example/images/first.png");
+
+        let project_detail = serde_json::json!({
+            "id": "example",
+            "project_type": "mod",
+            "title": "Example Mod",
+            "team": "Example Author",
+            "description": "A sample project.",
+            "gallery": [{"url":"https://cdn.modrinth.com/data/example/images/detail.png", "title":"In game"}]
+        });
+        let parsed = parse_modrinth_project(&project_detail, "mod").unwrap();
+        assert_eq!(parsed.gallery.len(), 1);
+        assert_eq!(parsed.gallery[0].title.as_deref(), Some("In game"));
     }
 
     #[test]
