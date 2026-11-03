@@ -1,4 +1,5 @@
 pub mod database;
+pub mod downloads;
 pub mod error;
 pub mod java;
 pub mod launch;

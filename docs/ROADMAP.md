@@ -2,29 +2,32 @@
 
 This roadmap tracks implementation against the project specification. Work is incremental; a milestone is complete only after its behavior is implemented and validated. No milestone implies a public release.
 
-## Current foundation — 0.1.0-dev.1
+## Current foundation — 0.1.0-dev.2
 
-The repository contains a Tauri 2 desktop shell, React/TypeScript interface, Rust backend, SQLite persistence, Java discovery, existing-installation detection, instance records, development-only unverified profiles, and a local launch-plan resolver. The current launcher expects complete, legitimately installed game files. A real desktop session and in-game launch still need validation.
+The repository contains a Tauri 2 desktop shell, React/TypeScript interface, Rust backend, SQLite persistence, Java discovery, existing-installation detection, instance records, development-only unverified profiles, a local launch-plan resolver, and an initial official vanilla version installer. The installer has not yet been exercised against live Mojang files, and a real desktop session and in-game launch still need validation.
 
 Completed in this development version:
 
 - Corrected offline test profile UUID generation to match Java's name-based UUID behavior. Existing saved UUIDs remain unchanged.
+- Added the official Minecraft version browser and isolated vanilla version downloads with progress, cancellation, retries, and upstream integrity checks.
+- Moved network and file transfer work off the UI command thread.
+- Updated app data and privacy documentation for version downloads.
 
 Remaining follow-up priorities:
 
 - Select a compatible discovered Java runtime when an instance has no explicit Java choice.
-- Exercise the launch pipeline against a user-selected installation and capture process exit status and logs.
+- Validate a complete vanilla download and launch using legitimate game files and a development profile.
+- Add clear launch messaging and compatible Java selection for the chosen version.
 - Add resource limits to native archive extraction before accepting downloaded or mod-provided archives.
 - Add schema-versioned SQLite migrations before the data model grows.
 
 ## Planned milestones
 
-### 0.2.0 — Official version installation
+### 0.2.0 — Installation management
 
-- Read and filter the official Minecraft version manifest.
-- Resolve version metadata, libraries, natives, and assets for installation.
-- Download with bounded concurrency, progress, cancellation, retry, and atomic replacement.
-- Verify upstream checksums and safely resume or repair incomplete installations.
+- Harden the initial vanilla installer with live-download validation, repair, and recovery from interrupted installs.
+- Add a persistent download queue, configurable concurrency, and safe pause/resume where supported.
+- Add support and tests for historical version metadata formats that the initial installer does not handle.
 - Keep existing working files intact when an installation fails.
 
 ### 0.3.0 — Official account authentication

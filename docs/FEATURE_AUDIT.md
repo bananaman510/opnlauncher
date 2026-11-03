@@ -5,7 +5,7 @@ Scope: repository source and configuration only. No installed Minecraft director
 
 ## Summary
 
-OpnLauncher is an existing Tauri 2 desktop prototype using Rust, React, TypeScript, Vite, and SQLite. Its strongest working slice is local discovery and registration of existing Minecraft installations, Java discovery, instance metadata, and a launch-plan resolver for complete local version files. The prototype does not download or install game files and does not implement authenticated Microsoft accounts.
+OpnLauncher is a Tauri 2 desktop prototype using Rust, React, TypeScript, Vite, and SQLite. It now has a first official vanilla version browser and installer alongside local installation discovery, Java discovery, instance metadata, and a launch-plan resolver. Download metadata is checked and game files are installed into a new managed instance directory. The installer has not yet been validated with a live full-version download, and authenticated Microsoft accounts are not implemented.
 
 The implementation is small and can be extended without replacing its architecture. The launch path has useful unit coverage for inheritance, rules, argument expansion, and path validation, but it has not been proven against a real installed Minecraft version in a desktop session. The AppImage packaging step produced an artifact during local validation, but both the AppImage and unbundled binary failed GTK initialization in the available automation session. Treat GUI and game launch as unverified.
 
@@ -14,21 +14,22 @@ The implementation is small and can be extended without replacing its architectu
 | Area | Current implementation |
 | --- | --- |
 | Desktop shell | Tauri 2, Rust backend, React 19, TypeScript, Vite, and a custom CSS dark theme. Linux is the current development target. |
-| Frontend | Home and instance views, installation inspection and registration, per-instance Java and memory controls, profile selection in development builds, log display, and a small read-only settings view. |
+| Frontend | Home and instance views, installation inspection and registration, official version search/filter/install flow, download progress/cancellation, per-instance Java and memory controls, profile selection in development builds, log display, and a small read-only settings view. |
 | Persistence | SQLite database in Tauri's application data directory; stores instances, development profiles, and a settings table. The connection is serialized through a mutex. |
 | Java | Discovers runtimes from `JAVA_HOME`, `PATH`, common Linux paths, and standard executable locations; parses version, vendor, and architecture. Launch planning checks the selected runtime against the version's required Java major. |
-| Installation detection | Reads common Minecraft directories, `MINECRAFT_DIR`, and user-selected local paths. Validates version JSON IDs and sorts discovered versions. It does not download or repair files. |
+| Installation detection | Reads common Minecraft directories, `MINECRAFT_DIR`, and user-selected local paths. Validates version JSON IDs and sorts discovered versions. Registered directories remain separate from managed downloaded instances. |
+| Vanilla version installation | Fetches Mojang's version manifest on request, filters release/snapshot/old alpha/beta entries, resolves supported vanilla metadata, libraries, native classifiers, logging configs, and assets, then downloads into a new instance directory with HTTPS, size/SHA-1 checks, retries, bounded parallelism, cancellation, and progress. Very old metadata formats may not work; there is no pause/resume or repair yet. |
 | Instance records | Create empty managed directories, register an existing installation/version, rename, forget the launcher record, set Java, and set memory. Existing installations are registered by their shared game-directory path, so they do not yet have independent saves or mods. |
 | Launch resolver | Resolves inherited version metadata, libraries, JVM/game arguments, OS rules, classpath, native archives, Java compatibility, and logging configuration from local files. Starts Java directly without a shell and streams output to local logs/events. |
 | Archive handling | Native archive extraction rejects unsafe paths and symbolic links. It currently has no expanded-size or entry-count limits. |
-| Development profiles | Unverified local profiles are available only when both the development feature and Rust debug assertions are enabled. The release AppImage therefore does not expose this profile path. |
+| Developer profiles | Unverified local profiles are enabled by the default desktop feature set in development and release builds. They are clearly labeled and do not authenticate accounts or verify ownership. |
 | Tauri security | The frontend has only `core:default`; it has no unrestricted shell, filesystem, or process plugin. |
-| Privacy | No application network requests, telemetry, ads, crash-reporting service, or automatic log upload are implemented in this prototype. |
+| Privacy | No telemetry, ads, crash-reporting service, or automatic log upload. Mojang metadata and game-file requests occur only when the user opens or refreshes Versions or starts an installation; no account tokens are currently involved. |
 
 ## Partial or unavailable features
 
-- The navigation includes Versions, Mods, Modpacks, Accounts, and Downloads, but these destinations are placeholders.
-- Minecraft version metadata is read from existing files only. There is no official manifest fetch, library or asset download, integrity verification, queue, resume, repair, or cancellation flow.
+- Mods, Modpacks, and Accounts are placeholders. Versions browses official vanilla versions; Downloads shows the current or most recent install progress. There is no persistent queue, pause/resume, or repair flow.
+- The installer handles official vanilla version metadata and files. Fabric/Quilt/Forge/NeoForge metadata, modpacks, and custom version installation are not supported.
 - Microsoft OAuth, ownership checks, account switching, token refresh, and OS credential storage are not implemented.
 - The launch resolver supports the metadata forms represented in its code and tests; it has no end-to-end coverage across vanilla releases or mod-loader metadata.
 - Java selection is manual per instance. The fallback uses the first discovered runtime, which can be incompatible even when another compatible runtime is installed.
@@ -41,8 +42,8 @@ The implementation is small and can be extended without replacing its architectu
 
 - Rust unit tests cover SQLite instance/profile operations, Java version parsing, local installation inspection, version ordering, launch metadata merging, argument rules, path validation, OS matching, and Java version defaults.
 - Frontend tests cover local date/time and Java labels.
-- There are no Tauri command integration tests, real-game launch tests, UI automation tests, installer/download tests, or cross-platform tests.
-- This audit's checks passed: all 13 Rust unit tests, all 3 frontend tests, and the TypeScript/Vite production build.
+- There are no Tauri command integration tests, real-game launch tests, UI automation tests, live installer tests, or cross-platform tests. Installer helper tests validate metadata/path planning but do not contact Mojang.
+- The current checks passed: Rust library tests, frontend tests, TypeScript/Vite production build, and a desktop-feature Rust compile check. A full desktop bundle and live game download/launch were not run in this validation pass.
 - An earlier local AppImage build completed, but GUI startup and Minecraft launch remain unverified in the available session.
 
 ## Issues and architectural observations
@@ -59,8 +60,10 @@ The implementation is small and can be extended without replacing its architectu
 ## Recommended implementation order
 
 1. Finish and test the local vanilla launch slice: compatible Java selection, accurate offline test identity, clear preflight errors, and a real isolated launch test using user-selected legitimate game files.
-2. Implement official version metadata and a safe installation/download manager with hashes, atomic writes, retries, cancellation, and repair.
+2. Exercise a complete vanilla download and launch using legitimate game files, then add installer repair/recovery and compatible Java selection.
 3. Implement Microsoft authentication and entitlement verification with OS credential storage before enabling authenticated launch in release builds.
 4. Add independently isolated instances, settings, deletion/forget semantics, backups, and import/export.
 5. Add Fabric first, then Modrinth discovery and install flows; expand loader and modpack formats incrementally.
 6. Complete diagnostics, privacy/security review, Linux distribution validation, Windows/macOS support, CI, and publication preparation only when explicitly requested.
+
+This feature set is an incremental foundation; several planned capabilities remain open. Account authentication, mod loaders, Modrinth integration, modpacks, backups, custom themes, and distribution work remain open roadmap items.

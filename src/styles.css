@@ -273,6 +273,54 @@ select.field-control { cursor: pointer; }
 .profile-create-form > small { margin-top: 5px; color: #7d828a; font-size: 8px; }
 .profile-create-form .play-button { align-self: flex-start; margin-top: 12px; }
 
+.version-manager-panel { padding: 16px; background: #17191d; border: 1px solid #2b2e34; border-radius: 11px; }
+.version-manager-note { display: flex; align-items: center; gap: 10px; padding: 11px; background: #1c2520; border: 1px solid #34453a; border-radius: 8px; }
+.version-manager-note > span:last-child, .version-download-callout > span:nth-child(2) { display: flex; flex: 1; flex-direction: column; gap: 4px; }
+.version-manager-note strong, .version-download-callout strong { color: #e2e5e1; font-size: 10px; }
+.version-manager-note small, .version-download-callout small { color: #92989a; font-size: 8px; line-height: 1.5; }
+.version-note-icon { display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-items: center; color: #a8d7b4; background: #25382b; border: 1px solid #3c5843; border-radius: 8px; }
+.version-toolbar { display: flex; align-items: center; gap: 10px; margin: 13px 0 8px; }
+.version-toolbar .search-box { flex: 1; }
+.version-filters { display: flex; gap: 3px; padding: 3px; background: #111316; border: 1px solid #2d3036; border-radius: 7px; }
+.version-filters button { padding: 6px 9px; color: #8d9299; background: transparent; border: 0; border-radius: 5px; font-size: 8px; cursor: pointer; }
+.version-filters button.selected { color: #d9e8dc; background: #28372d; }
+.official-version-list { max-height: 540px; overflow: auto; border-top: 1px solid #2b2e34; }
+.official-version-row { display: flex; min-height: 54px; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid #292c31; }
+.version-row-mark { display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-items: center; color: #95c8a2; background: #202a23; border: 1px solid #34463a; border-radius: 8px; }
+.official-version-copy { display: flex; flex: 1; flex-direction: column; gap: 4px; }
+.official-version-copy strong { color: #e0e2e4; font: 10px var(--mono); }
+.official-version-copy small { color: #848a92; font-size: 8px; text-transform: capitalize; }
+.official-version-row .secondary-button { display: flex; min-height: 30px; align-items: center; gap: 5px; padding: 0 10px; font-size: 8px; }
+.version-empty-state { padding: 28px 10px; color: #92979e; text-align: center; font-size: 9px; }
+.version-list-note { margin: 9px 2px 0; color: #777c84; font-size: 8px; }
+.version-download-callout { display: flex; width: 100%; align-items: center; gap: 10px; margin-bottom: 13px; padding: 10px; color: inherit; background: #1d2921; border: 1px solid #3a4d40; border-radius: 8px; text-align: left; cursor: pointer; }
+.version-download-callout:hover { background: #233329; border-color: #52705b; }
+.version-download-callout:disabled { opacity: .55; cursor: not-allowed; }
+.callout-arrow { color: #a1d5ac; font-size: 17px; }
+.version-install-modal { width: min(500px, 100%); }
+.version-install-form { display: flex; flex-direction: column; gap: 8px; }
+.version-install-form .field-label { margin: 0; }
+.version-install-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
+.version-install-actions .play-button { min-height: 36px; font-size: 9px; }
+.install-progress-card { display: flex; flex-direction: column; gap: 9px; margin-top: 7px; padding: 11px; background: #15171a; border: 1px solid #30343a; border-radius: 8px; }
+.install-progress-card > div:first-child { display: flex; align-items: center; gap: 8px; color: #a6d4b1; }
+.install-progress-card strong { flex: 1; color: #d8dcda; font-size: 9px; }
+.install-progress-card span, .install-progress-card small { color: #898e96; font-size: 8px; }
+.download-panel { max-width: 780px; }
+.download-panel .settings-panel-header { align-items: center; }
+.download-progress-track { height: 5px; overflow: hidden; background: #101215; border: 1px solid #30343a; border-radius: 6px; }
+.download-progress-track > span { display: block; height: 100%; background: linear-gradient(90deg, #80bd8d, #c6da90); transition: width .15s ease; }
+.download-progress-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; color: #8b9097; font-size: 8px; }
+.download-current-file { overflow: hidden; margin: 9px 0 0; color: #747a82; font: 7px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 720px) {
+  .version-toolbar { align-items: stretch; flex-direction: column; }
+  .version-filters { justify-content: stretch; }
+  .version-filters button { flex: 1; }
+  .official-version-row { gap: 7px; }
+  .official-version-copy small { max-width: 150px; }
+}
+
 @media (max-width: 1140px) {
   .sidebar { width: 205px; }
   .main-content { width: calc(100% - 205px); margin-left: 205px; }

@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::database::Database;
+use crate::downloads::{self, DownloadProgress, ProgressSink, RemoteMinecraftVersion};
 use crate::java;
 use crate::launch::{build_launch_plan, LaunchRequest};
 use crate::minecraft;
@@ -20,6 +23,7 @@ use crate::models::{
 struct AppState {
     database: Arc<Database>,
     data_dir: PathBuf,
+    active_downloads: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 #[tauri::command]
@@ -30,6 +34,84 @@ fn list_instances(state: State<'_, AppState>) -> std::result::Result<Vec<Instanc
 #[tauri::command]
 fn scan_installations() -> Vec<MinecraftInstallation> {
     minecraft::discover_installations()
+}
+
+#[tauri::command]
+async fn list_official_versions() -> std::result::Result<Vec<RemoteMinecraftVersion>, String> {
+    tauri::async_runtime::spawn_blocking(downloads::available_versions)
+        .await
+        .map_err(display_error)?
+        .map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn install_minecraft_version(
+    name: String,
+    version_id: String,
+    download_id: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> std::result::Result<Instance, String> {
+    Uuid::parse_str(&download_id).map_err(|_| "download identifier is invalid".to_owned())?;
+    let name = crate::database::validate_instance_name(&name).map_err(display_error)?;
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let active_downloads = Arc::clone(&state.active_downloads);
+    {
+        let mut active = active_downloads.lock().map_err(display_error)?;
+        if active.contains_key(&download_id) {
+            return Err("a download with this identifier is already active".to_owned());
+        }
+        active.insert(download_id.clone(), Arc::clone(&cancellation));
+    }
+
+    let database = Arc::clone(&state.database);
+    let data_dir = state.data_dir.clone();
+    let instance_id = Uuid::new_v4().to_string();
+    let instances_dir = data_dir.join("instances");
+    let game_dir = instances_dir.join(&instance_id);
+    let worker_download_id = download_id.clone();
+    let app_for_progress = app.clone();
+    let progress_sink: ProgressSink = Arc::new(move |progress: DownloadProgress| {
+        let _ = app_for_progress.emit("download-progress", progress);
+    });
+    let install_result = tauri::async_runtime::spawn_blocking(move || {
+        let mut created_game_dir = false;
+        let result = (|| {
+            fs::create_dir_all(&instances_dir).map_err(display_error)?;
+            fs::create_dir(&game_dir).map_err(display_error)?;
+            created_game_dir = true;
+            downloads::install_version(
+                &version_id,
+                &game_dir,
+                &worker_download_id,
+                Arc::clone(&cancellation),
+                progress_sink,
+            )
+            .map_err(display_error)?;
+            database
+                .create_instance_with_id(&instance_id, &name, &game_dir.to_string_lossy(), Some(&version_id))
+                .map_err(display_error)
+        })();
+        if result.is_err() && created_game_dir {
+            let _ = fs::remove_dir_all(&game_dir);
+        }
+        result
+    })
+    .await;
+    if let Ok(mut active) = active_downloads.lock() {
+        active.remove(&download_id);
+    }
+    install_result.map_err(display_error)?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn cancel_download(download_id: String, state: State<'_, AppState>) -> std::result::Result<(), String> {
+    let active = state.active_downloads.lock().map_err(display_error)?;
+    let cancellation = active
+        .get(&download_id)
+        .ok_or_else(|| "download is not active".to_owned())?;
+    cancellation.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -248,7 +330,18 @@ fn launch_instance(
 }
 
 fn offline_profiles_enabled() -> bool {
-    cfg!(all(feature = "dev-offline-profiles", debug_assertions))
+    cfg!(feature = "dev-offline-profiles")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::offline_profiles_enabled;
+
+    #[test]
+    fn developer_profiles_remain_enabled_in_release_builds_with_the_feature() {
+        assert!(cfg!(feature = "dev-offline-profiles"));
+        assert!(offline_profiles_enabled());
+    }
 }
 
 fn stream_output<R: Read + Send + 'static>(
@@ -319,12 +412,16 @@ pub fn run() {
             app.manage(AppState {
                 database: Arc::new(database),
                 data_dir,
+                active_downloads: Arc::new(Mutex::new(HashMap::new())),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_instances,
             scan_installations,
+            list_official_versions,
+            install_minecraft_version,
+            cancel_download,
             inspect_installation,
             register_installation,
             create_instance,

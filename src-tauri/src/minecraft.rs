@@ -116,13 +116,30 @@ pub fn inspect_installation(path: &Path) -> Result<MinecraftInstallation> {
 }
 
 pub fn is_safe_id(id: &str) -> bool {
+    let device_name = id
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let reserved_device_name = matches!(
+        device_name.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5"
+            | "COM6" | "COM7" | "COM8" | "COM9" | "LPT1" | "LPT2" | "LPT3" | "LPT4"
+            | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+    );
+
     !id.is_empty()
         && id.len() <= 128
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
         && id != "."
         && id != ".."
+        && !id.ends_with(' ')
+        && !id.ends_with('.')
+        && !reserved_device_name
+        && !id.chars().any(|character| {
+            character.is_control()
+                || matches!(character, '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*')
+        })
 }
 
 fn version_kind_rank(kind: &str) -> u8 {
@@ -181,7 +198,13 @@ mod tests {
     fn rejects_path_like_version_ids() {
         assert!(!is_safe_id("../version"));
         assert!(!is_safe_id(""));
+        assert!(!is_safe_id("CON"));
+        assert!(!is_safe_id("COM1.txt"));
+        assert!(!is_safe_id("drive:relative"));
+        assert!(!is_safe_id("trailing."));
         assert!(is_safe_id("fabric-loader-1.21.4"));
+        assert!(is_safe_id("3D Shareware v1.34"));
+        assert!(is_safe_id("20w14∞"));
     }
 
     #[test]

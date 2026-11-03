@@ -9,6 +9,25 @@ export interface MinecraftInstallation {
   versions: MinecraftVersion[];
 }
 
+export interface RemoteMinecraftVersion {
+  id: string;
+  kind: string;
+  releaseTime: string;
+  url: string;
+  sha1: string | null;
+}
+
+export interface DownloadProgress {
+  downloadId: string;
+  versionId: string;
+  phase: string;
+  currentFile: string;
+  completedFiles: number;
+  totalFiles: number;
+  downloadedBytes: number;
+  totalBytes: number;
+}
+
 export interface Instance {
   id: string;
   name: string;

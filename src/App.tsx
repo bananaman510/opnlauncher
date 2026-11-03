@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import packageJson from "../package.json";
+import { DownloadsPage } from "./pages/DownloadsPage";
+import { VersionsPage } from "./pages/VersionsPage";
 import {
   ArrowDownToLine,
   Boxes,
@@ -36,6 +38,8 @@ import type {
   LaunchStarted,
   MinecraftInstallation,
   OfflineProfile,
+  DownloadProgress,
+  RemoteMinecraftVersion,
 } from "./types";
 
 const navigation = [
@@ -49,7 +53,6 @@ const navigation = [
   { id: "settings", label: "Settings", icon: Settings2 },
 ] as const;
 
-const isDevelopmentProfileBuild = import.meta.env.DEV;
 const appVersion = packageJson.version;
 
 function App() {
@@ -63,8 +66,10 @@ function App() {
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const [selectedJavaPath, setSelectedJavaPath] = useState("");
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [showVersionInstallDialog, setShowVersionInstallDialog] = useState(false);
   const [showProfileForm, setShowProfileForm] = useState(false);
   const [instanceName, setInstanceName] = useState("");
+  const [versionInstanceName, setVersionInstanceName] = useState("");
   const [profileName, setProfileName] = useState("");
   const [installPath, setInstallPath] = useState("");
   const [inspectedInstall, setInspectedInstall] = useState<MinecraftInstallation | null>(null);
@@ -77,12 +82,28 @@ function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [launchState, setLaunchState] = useState<"idle" | "running" | "exited">("idle");
   const [logPath, setLogPath] = useState("");
+  const [officialVersions, setOfficialVersions] = useState<RemoteMinecraftVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [versionsError, setVersionsError] = useState("");
+  const [selectedRemoteVersion, setSelectedRemoteVersion] = useState<RemoteMinecraftVersion | null>(null);
+  const [installError, setInstallError] = useState("");
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
+  const [activeDownloadId, setActiveDownloadId] = useState<string | null>(null);
+  const [isInstallingVersion, setIsInstallingVersion] = useState(false);
+  const activeDownloadIdRef = useRef<string | null>(null);
   const selectedInstanceIdRef = useRef(selectedInstanceId);
   selectedInstanceIdRef.current = selectedInstanceId;
 
   const selectedInstance = instances.find((instance) => instance.id === selectedInstanceId) ?? null;
   const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
   const selectedJava = runtimes.find((runtime) => runtime.path === selectedJavaPath) ?? null;
+  const downloadPercent = downloadProgress
+    ? downloadProgress.totalBytes > 0
+      ? Math.min(100, Math.round((downloadProgress.downloadedBytes / downloadProgress.totalBytes) * 100))
+      : downloadProgress.totalFiles > 0
+        ? Math.round((downloadProgress.completedFiles / downloadProgress.totalFiles) * 100)
+        : 0
+    : 0;
   const latestLogLines = useMemo(() => logs.slice(-100), [logs]);
   const visibleInstances = useMemo(() => {
     const query = instanceSearch.trim().toLocaleLowerCase();
@@ -96,6 +117,7 @@ function App() {
     let cancelled = false;
     let unlistenLog: UnlistenFn | undefined;
     let unlistenExit: UnlistenFn | undefined;
+    let unlistenDownload: UnlistenFn | undefined;
 
     const load = async () => {
       setIsBusy(true);
@@ -115,12 +137,10 @@ function App() {
           setMemoryChoice(savedInstances[0].memoryMb);
         }
         if (foundRuntimes.length > 0) setSelectedJavaPath(foundRuntimes[0].path);
-        if (isDevelopmentProfileBuild) {
-          const savedProfiles = await invoke<OfflineProfile[]>("list_offline_profiles");
-          if (!cancelled) {
-            setProfiles(savedProfiles);
-            setSelectedProfileId(savedProfiles[0]?.id ?? "");
-          }
+        const savedProfiles = await invoke<OfflineProfile[]>("list_offline_profiles");
+        if (!cancelled) {
+          setProfiles(savedProfiles);
+          setSelectedProfileId(savedProfiles[0]?.id ?? "");
         }
       } catch (reason) {
         if (!cancelled) setError(String(reason));
@@ -151,10 +171,18 @@ function App() {
     }).then((dispose) => {
       unlistenExit = dispose;
     });
+    void listen<DownloadProgress>("download-progress", (event) => {
+      if (event.payload.downloadId === activeDownloadIdRef.current) {
+        setDownloadProgress(event.payload);
+      }
+    }).then((dispose) => {
+      unlistenDownload = dispose;
+    });
     return () => {
       cancelled = true;
       unlistenLog?.();
       unlistenExit?.();
+      unlistenDownload?.();
     };
     // The selected instance ref keeps event subscriptions stable while selection changes.
   }, [desktop]);
@@ -166,6 +194,12 @@ function App() {
     }
   }, [selectedInstanceId, instances, runtimes]);
 
+  useEffect(() => {
+    if (desktop && activePage === "versions" && officialVersions.length === 0) {
+      void loadOfficialVersions();
+    }
+  }, [desktop, activePage]);
+
   async function refreshInstances() {
     const savedInstances = await invoke<Instance[]>("list_instances");
     setInstances(savedInstances);
@@ -174,6 +208,80 @@ function App() {
   async function refreshInstallations() {
     const found = await invoke<MinecraftInstallation[]>("scan_installations");
     setInstallations(found);
+  }
+
+  async function loadOfficialVersions() {
+    setVersionsLoading(true);
+    setVersionsError("");
+    try {
+      const found = await invoke<RemoteMinecraftVersion[]>("list_official_versions");
+      setOfficialVersions(found);
+    } catch (reason) {
+      setVersionsError(String(reason));
+    } finally {
+      setVersionsLoading(false);
+    }
+  }
+
+  function chooseRemoteVersion(version: RemoteMinecraftVersion) {
+    setSelectedRemoteVersion(version);
+    setVersionInstanceName(`Minecraft ${version.id}`);
+    setInstallError("");
+    setShowVersionInstallDialog(true);
+  }
+
+  async function installRemoteVersion(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedRemoteVersion || !versionInstanceName.trim() || isInstallingVersion) return;
+    const downloadId = crypto.randomUUID();
+    activeDownloadIdRef.current = downloadId;
+    setActiveDownloadId(downloadId);
+    setDownloadProgress({
+      downloadId,
+      versionId: selectedRemoteVersion.id,
+      phase: "Preparing version metadata",
+      currentFile: "",
+      completedFiles: 0,
+      totalFiles: 0,
+      downloadedBytes: 0,
+      totalBytes: 0,
+    });
+    setInstallError("");
+    setIsInstallingVersion(true);
+    try {
+      const created = await invoke<Instance>("install_minecraft_version", {
+        name: versionInstanceName.trim(),
+        versionId: selectedRemoteVersion.id,
+        downloadId,
+      });
+      setInstances((current) => [created, ...current]);
+      setSelectedInstanceId(created.id);
+      setMemoryChoice(created.memoryMb);
+      setDownloadProgress((current) => current ? { ...current, phase: "Installation complete" } : current);
+      setShowVersionInstallDialog(false);
+      setSelectedRemoteVersion(null);
+      setActivePage("instances");
+    } catch (reason) {
+      const message = String(reason);
+      setInstallError(message);
+      setDownloadProgress((current) => current ? {
+        ...current,
+        phase: message.toLowerCase().includes("cancel") ? "Installation cancelled" : "Installation failed",
+      } : current);
+    } finally {
+      activeDownloadIdRef.current = null;
+      setActiveDownloadId(null);
+      setIsInstallingVersion(false);
+    }
+  }
+
+  async function cancelDownload() {
+    if (!activeDownloadId) return;
+    try {
+      await invoke("cancel_download", { downloadId: activeDownloadId });
+    } catch (reason) {
+      setInstallError(String(reason));
+    }
   }
 
   async function addDetectedInstallation(installation: MinecraftInstallation, versionId: string) {
@@ -359,7 +467,7 @@ function App() {
         <header className="topbar">
           <div className="breadcrumbs"><span>Workspace</span><span className="crumb-divider">/</span><strong>{activeNavigation.label}</strong></div>
           <div className="topbar-actions">
-            <div className="offline-pill"><span /> Offline ready</div>
+          <div className="offline-pill"><span /> Local-first</div>
             <button className="icon-button" type="button" aria-label="Settings" onClick={() => setActivePage("settings")}><MonitorCog size={17} /></button>
             <div className="avatar">OP</div>
           </div>
@@ -411,9 +519,9 @@ function App() {
                           {launchState === "running" ? <LoaderCircle className="spin" size={17} /> : <Play size={16} fill="currentColor" />}
                           <span>{launchState === "running" ? "Launching" : "Play"}</span>
                         </button>
-                        <button className="secondary-button profile-select" type="button" onClick={() => setShowProfileForm(true)} disabled={!isDevelopmentProfileBuild} title={isDevelopmentProfileBuild ? "Choose a local test profile" : "Microsoft sign-in is planned for a later phase"}>
+                        <button className="secondary-button profile-select" type="button" onClick={() => setShowProfileForm(true)} title="Choose a local developer profile">
                           <span className="profile-avatar">{selectedProfile?.name.slice(0, 1).toUpperCase() ?? "?"}</span>
-                          <span>{selectedProfile?.name ?? (isDevelopmentProfileBuild ? "Select profile" : "Account support planned")}</span>
+                          <span>{selectedProfile?.name ?? "Select profile"}</span>
                           <ChevronDown size={14} />
                         </button>
                         <button className="secondary-button compact-button" type="button" onClick={() => setActivePage("instances")} aria-label="Edit instance"><Settings2 size={16} /></button>
@@ -423,8 +531,8 @@ function App() {
                 ) : (
                   <div className="empty-launch">
                     <div className="empty-orbit"><Command size={24} /></div>
-                    <div><h2>Nothing selected yet</h2><p>Add a local Minecraft installation to get started.</p></div>
-                    <button className="play-button" type="button" onClick={() => setShowAddDialog(true)}><Plus size={17} /><span>Add installation</span></button>
+                    <div><h2>Nothing selected yet</h2><p>Create an instance by downloading a version or using existing files.</p></div>
+                    <button className="play-button" type="button" onClick={() => setShowAddDialog(true)}><Plus size={17} /><span>Add instance</span></button>
                   </div>
                 )}
                 {selectedInstance && (
@@ -435,13 +543,11 @@ function App() {
                 )}
               </section>
 
-              {isDevelopmentProfileBuild && (
-                <section className="dev-profile-note">
-                  <div className="note-icon"><UsersRound size={17} /></div>
-                  <div><strong>Development profile</strong><span>This local test profile is unverified and cannot authenticate to online servers.</span></div>
-                  <button type="button" onClick={() => setShowProfileForm(true)}>{profiles.length ? "Manage" : "Create profile"}</button>
-                </section>
-              )}
+              <section className="dev-profile-note">
+                <div className="note-icon"><UsersRound size={17} /></div>
+                <div><strong>Developer profile</strong><span>This local test profile is unverified and cannot authenticate to online servers.</span></div>
+                <button type="button" onClick={() => setShowProfileForm(true)}>{profiles.length ? "Manage" : "Create profile"}</button>
+              </section>
 
               <div className="section-heading-row">
                 <div><p className="eyebrow">YOUR LIBRARY</p><h2>Instances <span className="count-pill">{instances.length}</span></h2></div>
@@ -466,8 +572,8 @@ function App() {
               ) : (
                 <div className="empty-library">
                   <div className="empty-library-icon"><Boxes size={20} /></div>
-                  <div><strong>Your library is ready for its first instance</strong><span>We’ll use a Minecraft installation already on this device.</span></div>
-                  <button type="button" onClick={() => setShowAddDialog(true)}>Add installation <span>→</span></button>
+                  <div><strong>Your library is ready for its first instance</strong><span>Download a Minecraft version or connect files already on this device.</span></div>
+                  <button type="button" onClick={() => setShowAddDialog(true)}>Add instance <span>→</span></button>
                 </div>
               )}
 
@@ -486,7 +592,7 @@ function App() {
                 </div>
                 <div className="info-card">
                   <div className="info-card-icon violet"><ArrowDownToLine size={17} /></div>
-                  <div><strong>Nothing downloading</strong><span>Installations only read files already on your device.</span></div>
+                  <div><strong>Install a Minecraft version</strong><span>Browse Mojang’s official releases, snapshots, and historical versions.</span></div>
                   <span className="info-card-arrow">↗</span>
                 </div>
               </section>
@@ -496,18 +602,30 @@ function App() {
               <section className="welcome-row subpage-title"><div><p className="eyebrow">LOCAL LIBRARY</p><h1>Instances</h1><p className="page-subtitle">Keep your game profiles organized on this device.</p></div><button className="play-button" onClick={() => setShowAddDialog(true)} type="button"><Plus size={16} /> Add instance</button></section>
               {error && <div className="error-banner" role="alert"><CircleAlert size={17} /><span>{error}</span><button type="button" onClick={() => setError("")} aria-label="Dismiss error"><X size={16} /></button></div>}
               <div className="instance-list-toolbar"><div className="search-box"><Search size={16} /><input aria-label="Search instances" placeholder="Search your instances" value={instanceSearch} onChange={(event) => setInstanceSearch(event.target.value)} /></div><button className="secondary-button" type="button" onClick={() => void refreshInstallations()}>Rescan local files</button></div>
-              {instances.length === 0 ? <div className="empty-library large-empty"><div className="empty-library-icon"><Boxes size={20} /></div><div><strong>No instances yet</strong><span>Connect an existing Minecraft installation to create your first instance.</span></div><button type="button" onClick={() => setShowAddDialog(true)}>Add installation <span>→</span></button></div> : visibleInstances.length === 0 ? <div className="empty-library large-empty"><div className="empty-library-icon"><Search size={20} /></div><div><strong>No matching instances</strong><span>Try a different name, version, or directory path.</span></div></div> : (
+              {instances.length === 0 ? <div className="empty-library large-empty"><div className="empty-library-icon"><Boxes size={20} /></div><div><strong>No instances yet</strong><span>Download an official version or register a local installation.</span></div><button type="button" onClick={() => setShowAddDialog(true)}>Add instance <span>→</span></button></div> : visibleInstances.length === 0 ? <div className="empty-library large-empty"><div className="empty-library-icon"><Search size={20} /></div><div><strong>No matching instances</strong><span>Try a different name, version, or directory path.</span></div></div> : (
                 <div className="management-layout">
                   <div className="management-list">{visibleInstances.map((instance) => <button className={`management-row ${selectedInstanceId === instance.id ? "selected" : ""}`} key={instance.id} onClick={() => setSelectedInstanceId(instance.id)} type="button"><span className="row-mark"><Command size={16} /></span><span className="row-copy"><strong>{instance.name}</strong><small>{instance.versionId ?? "No version installed"} · {formatRelativeTime(instance.lastPlayedAt)}</small></span><span className="row-state">LOCAL</span></button>)}</div>
                   {selectedInstance && <section className="settings-panel"><div className="settings-panel-header"><div className="game-emblem small-emblem"><Command size={22} /></div><div><strong>{selectedInstance.name}</strong><span>{selectedInstance.versionId ?? "No Minecraft version selected"}</span></div></div><label className="field-label" htmlFor="java-path">Java runtime</label><select id="java-path" className="field-control" value={selectedJavaPath} onChange={(event) => setSelectedJavaPath(event.target.value)}><option value="">Automatic detection</option>{runtimes.map((runtime) => <option key={runtime.path} value={runtime.path}>{javaLabel(runtime.majorVersion)} · {runtime.path}</option>)}</select><div className="field-row"><label className="field-label" htmlFor="memory">Memory allocation</label><span className="field-value">{memoryChoice} MB</span></div><input id="memory" className="memory-slider" type="range" min="1024" max="16384" step="512" value={memoryChoice} onChange={(event) => setMemoryChoice(Number(event.target.value))} /><div className="slider-scale"><span>1 GB</span><span>16 GB</span></div><div className="detail-path"><HardDrive size={14} /><span>{selectedInstance.gameDir}</span></div><button className="save-button" type="button" onClick={() => void saveInstanceSettings()}><Check size={15} /> Save instance settings</button><div className="instance-actions"><button className="secondary-button" type="button" onClick={() => void renameSelectedInstance()}>Rename</button><button className="forget-button" type="button" onClick={() => void forgetSelectedInstance()}>Remove from launcher</button></div><p className="preserve-note">Removing an instance keeps its game files, settings, and worlds on disk.</p></section>}
                 </div>
               )}
-              <form className="quick-create" onSubmit={(event) => void createBlankInstance(event)}><div><strong>Create an empty instance</strong><span>Creates a new local game directory. No game files are downloaded.</span></div><input value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder="Instance name" aria-label="New instance name" maxLength={48} /><button type="submit" className="secondary-button" disabled={isBusy}>Create</button></form>
+              <form className="quick-create" onSubmit={(event) => void createBlankInstance(event)}><div><strong>Create an empty instance</strong><span>For a separate setup; download a version later from Minecraft versions.</span></div><input value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder="Instance name" aria-label="New instance name" maxLength={48} /><button type="submit" className="secondary-button" disabled={isBusy}>Create</button></form>
             </>
+          ) : activePage === "versions" ? (
+            <VersionsPage
+              versions={officialVersions}
+              loading={versionsLoading}
+              error={versionsError}
+              onRefresh={() => void loadOfficialVersions()}
+              onInstall={chooseRemoteVersion}
+              installing={isInstallingVersion}
+              desktop={desktop}
+            />
+          ) : activePage === "downloads" ? (
+            <DownloadsPage progress={downloadProgress} active={isInstallingVersion} onCancel={() => void cancelDownload()} />
           ) : activePage === "settings" ? (
             <SettingsPage runtimes={runtimes} installations={installations} refreshInstallations={() => void refreshInstallations()} />
           ) : (
-            <section className="placeholder-page"><div className="placeholder-icon"><activeNavigation.icon size={22} /></div><p className="eyebrow">COMING IN A LATER PHASE</p><h1>{activeNavigation.label}</h1><p>This section will be added incrementally. OpnLauncher v{appVersion} focuses on local instances, Java discovery, and launching existing game files.</p><button className="secondary-button" type="button" onClick={() => setActivePage("home")}>Back to Home</button></section>
+            <section className="placeholder-page"><div className="placeholder-icon"><activeNavigation.icon size={22} /></div><p className="eyebrow">COMING IN A LATER PHASE</p><h1>{activeNavigation.label}</h1><p>This section will be added incrementally. OpnLauncher v{appVersion} currently focuses on local instances, Java discovery, and official vanilla version downloads.</p><button className="secondary-button" type="button" onClick={() => setActivePage("home")}>Back to Home</button></section>
           )}
 
           <footer className="page-footer"><span>OpnLauncher is an independent community project and is not affiliated with Mojang or Microsoft.</span><span>{appVersion} · LOCAL DEVELOPMENT BUILD</span></footer>
@@ -519,12 +637,35 @@ function App() {
       {showAddDialog && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAddDialog(false); }}>
           <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="add-modal-title">
-            <div className="modal-header"><div><p className="eyebrow">LOCAL FILES ONLY</p><h2 id="add-modal-title">Add an installation</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setShowAddDialog(false)}><X size={18} /></button></div>
-            <p className="modal-copy">OpnLauncher checks standard Minecraft directories and reads their installed version metadata. It won’t download or modify game files.</p>
-            {installations.length > 0 ? <div className="detected-list">{installations.map((installation) => <div className="detected-install" key={installation.root}><div className="detected-root"><HardDrive size={15} /><span>{installation.root}</span></div><div className="detected-version-list">{installation.versions.slice(0, 6).map((version) => <button className="version-option" key={version.id} type="button" onClick={() => void addDetectedInstallation(installation, version.id)}><span><strong>{version.id}</strong><small>{version.kind}</small></span><Plus size={15} /></button>)}</div></div>)}</div> : <div className="no-detected"><FolderOpen size={18} /><span>No standard installation found yet. Enter its game directory below.</span></div>}
+            <div className="modal-header"><div><p className="eyebrow">ADD TO YOUR LIBRARY</p><h2 id="add-modal-title">Add an instance</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setShowAddDialog(false)}><X size={18} /></button></div>
+            <p className="modal-copy">Download a Minecraft version into a new instance, register existing game files, or create an empty folder.</p>
+            <button className="version-download-callout" type="button" onClick={() => { setShowAddDialog(false); setActivePage("versions"); }} disabled={!desktop}>
+              <span className="version-note-icon"><ArrowDownToLine size={16} /></span>
+              <span><strong>Download a Minecraft version</strong><small>Browse releases, snapshots, and older versions from Mojang.</small></span>
+              <span className="callout-arrow">→</span>
+            </button>
+            {installations.length > 0 ? <div className="detected-list">{installations.map((installation) => <div className="detected-install" key={installation.root}><div className="detected-root"><HardDrive size={15} /><span>{installation.root}</span></div><div className="detected-version-list">{installation.versions.slice(0, 6).map((version) => <button className="version-option" key={version.id} type="button" onClick={() => void addDetectedInstallation(installation, version.id)}><span><strong>{version.id}</strong><small>{version.kind}</small></span><Plus size={15} /></button>)}</div></div>)}</div> : <div className="no-detected"><FolderOpen size={18} /><span>No existing Minecraft installation was found. You can still download a version above.</span></div>}
             <div className="custom-path-row"><input className="field-control" value={installPath} onChange={(event) => setInstallPath(event.target.value)} placeholder="Path to .minecraft" aria-label="Custom Minecraft installation path" /><button className="secondary-button" type="button" onClick={() => void inspectCustomInstallation()} disabled={!installPath.trim() || isBusy}>Inspect</button></div>
             {inspectedInstall && <div className="inspected-version"><label className="field-label" htmlFor="version-choice">Installed version</label><select id="version-choice" className="field-control" value={versionChoice} onChange={(event) => setVersionChoice(event.target.value)}>{inspectedInstall.versions.map((version) => <option value={version.id} key={version.id}>{version.id} · {version.kind}</option>)}</select><button className="play-button" type="button" onClick={() => void addInspectedInstallation()}><Plus size={15} /> Add selected version</button></div>}
             <details className="empty-instance-details"><summary>Create an empty instance</summary><form onSubmit={(event) => void createBlankInstance(event)}><input className="field-control" value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder="Instance name" maxLength={48} /><button className="secondary-button" type="submit" disabled={isBusy}>Create</button></form></details>
+          </section>
+        </div>
+      )}
+
+      {showVersionInstallDialog && selectedRemoteVersion && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isInstallingVersion) setShowVersionInstallDialog(false); }}>
+          <section className="modal-card version-install-modal" role="dialog" aria-modal="true" aria-labelledby="version-install-title">
+            <div className="modal-header"><div><p className="eyebrow">OFFICIAL MINECRAFT FILES</p><h2 id="version-install-title">Install {selectedRemoteVersion.id}</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setShowVersionInstallDialog(false)} disabled={isInstallingVersion}><X size={18} /></button></div>
+            <p className="modal-copy">OpnLauncher will download and verify this version’s metadata, client, libraries, and assets into its own instance folder. It will not change your other Minecraft folders.</p>
+            <form className="version-install-form" onSubmit={(event) => void installRemoteVersion(event)}>
+              <label className="field-label" htmlFor="version-instance-name">Instance name</label>
+              <input id="version-instance-name" className="field-control" value={versionInstanceName} onChange={(event) => setVersionInstanceName(event.target.value)} maxLength={48} required disabled={isInstallingVersion} />
+              {installError && <div className="error-banner" role="alert"><CircleAlert size={16} /><span>{installError}</span></div>}
+              {isInstallingVersion && downloadProgress && <div className="install-progress-card"><div><LoaderCircle className="spin" size={15} /><strong>{downloadProgress.phase}</strong><span>{downloadProgress.completedFiles} / {downloadProgress.totalFiles} files</span></div><div className="download-progress-track"><span style={{ width: `${downloadPercent}%` }} /></div>{downloadProgress.currentFile && <small>{downloadProgress.currentFile}</small>}</div>}
+              <div className="version-install-actions">
+                {isInstallingVersion ? <button className="secondary-button" type="button" onClick={() => void cancelDownload()}>Cancel download</button> : <button className="play-button" type="submit" disabled={!versionInstanceName.trim()}><ArrowDownToLine size={15} /> Install version</button>}
+              </div>
+            </form>
           </section>
         </div>
       )}
@@ -556,10 +697,10 @@ function SettingsPage({
     <>
       <section className="welcome-row subpage-title"><div><p className="eyebrow">PREFERENCES</p><h1>Settings</h1><p className="page-subtitle">Local app configuration and detected runtime details.</p></div></section>
       <div className="settings-cards">
-        <section className="settings-panel wide-panel"><div className="settings-panel-header"><div className="info-card-icon green"><ShieldCheck size={17} /></div><div><strong>Privacy</strong><span>OpnLauncher has no telemetry, ads, or launcher account.</span></div></div><p className="settings-explainer">When you use a feature that needs network access, requests go directly to its documented provider. This first build only inspects local files and Java runtimes.</p></section>
+        <section className="settings-panel wide-panel"><div className="settings-panel-header"><div className="info-card-icon green"><ShieldCheck size={17} /></div><div><strong>Privacy</strong><span>OpnLauncher has no telemetry, ads, or launcher account.</span></div></div><p className="settings-explainer">Opening Minecraft versions contacts Mojang for its official version list. Installing a version downloads the files listed in its metadata directly from Minecraft file hosts. These requests happen only when you use those features.</p></section>
         <section className="settings-panel wide-panel"><div className="settings-panel-header"><div className="info-card-icon violet"><Cpu size={17} /></div><div><strong>Java runtimes</strong><span>{runtimes.length} detected on this device</span></div></div>{runtimes.length ? runtimes.map((runtime) => <div className="runtime-row" key={runtime.path}><span className="runtime-mark"><Cpu size={14} /></span><div><strong>{javaLabel(runtime.majorVersion)} · {runtime.vendor ?? "Java"}</strong><small>{runtime.path}</small></div><span className="runtime-arch">{runtime.architecture ?? "Unknown arch"}</span></div>) : <p className="settings-explainer">No Java runtime found. Set JAVA_HOME or install Java from your operating system package manager.</p>}</section>
         <section className="settings-panel wide-panel"><div className="settings-panel-header"><div className="info-card-icon blue"><HardDrive size={17} /></div><div><strong>Minecraft locations</strong><span>{installations.length} local installation{installations.length === 1 ? "" : "s"} detected</span></div></div>{installations.map((installation) => <div className="runtime-row" key={installation.root}><span className="runtime-mark"><HardDrive size={14} /></span><div><strong>{installation.versions.length} installed version{installation.versions.length === 1 ? "" : "s"}</strong><small>{installation.root}</small></div></div>)}<button className="secondary-button" type="button" onClick={refreshInstallations}>Rescan locations</button></section>
-        <section className="settings-panel wide-panel"><div className="settings-panel-header"><div className="info-card-icon amber"><MonitorCog size={17} /></div><div><strong>Application updates</strong><span>Update checks are not configured in this development build.</span></div></div><p className="settings-explainer">No update server or background check is enabled.</p></section>
+        <section className="settings-panel wide-panel"><div className="settings-panel-header"><div className="info-card-icon amber"><MonitorCog size={17} /></div><div><strong>Application updates</strong><span>Update checks are not configured in this development build.</span></div></div><p className="settings-explainer">No application update server or background check is enabled.</p></section>
       </div>
     </>
   );

@@ -85,6 +85,17 @@ pub fn build_launch_plan(request: LaunchRequest<'_>) -> Result<LaunchPlan> {
             asset_index_path.display()
         )));
     }
+    let game_assets_id = metadata
+        .get("assets")
+        .and_then(Value::as_str)
+        .filter(|id| is_safe_id(id))
+        .unwrap_or(asset_index);
+    let legacy_assets_dir = assets_dir.join("virtual").join(game_assets_id);
+    let game_assets_dir = if legacy_assets_dir.is_dir() {
+        legacy_assets_dir
+    } else {
+        assets_dir.clone()
+    };
 
     let version_jar_id = metadata
         .get("jar")
@@ -140,6 +151,7 @@ pub fn build_launch_plan(request: LaunchRequest<'_>) -> Result<LaunchPlan> {
     substitutions.insert("version_name".to_owned(), Value::String(version_id.to_owned()));
     substitutions.insert("game_directory".to_owned(), Value::String(game_dir.to_string_lossy().into_owned()));
     substitutions.insert("assets_root".to_owned(), Value::String(assets_dir.to_string_lossy().into_owned()));
+    substitutions.insert("game_assets".to_owned(), Value::String(game_assets_dir.to_string_lossy().into_owned()));
     substitutions.insert("assets_index_name".to_owned(), Value::String(asset_index.to_owned()));
     substitutions.insert("auth_uuid".to_owned(), Value::String(request.profile.uuid.clone()));
     substitutions.insert("auth_access_token".to_owned(), Value::String(String::new()));
@@ -337,7 +349,7 @@ fn required_java_major(metadata: &Value, version_id: &str) -> u32 {
     }
 }
 
-fn rules_allow(rules: Option<&Value>) -> bool {
+pub(crate) fn rules_allow(rules: Option<&Value>) -> bool {
     let Some(rules) = rules else { return true };
     let Some(rules) = rules.as_array() else { return false };
     let mut allowed = false;
@@ -454,7 +466,7 @@ fn native_artifact_path(library: &Value, game_dir: &Path) -> Result<Option<PathB
     Ok(Some(absolute))
 }
 
-fn maven_path(coordinate: &str) -> Result<PathBuf> {
+pub(crate) fn maven_path(coordinate: &str) -> Result<PathBuf> {
     let mut coordinate_parts = coordinate.split('@');
     let without_extension = coordinate_parts.next().unwrap_or(coordinate);
     let extension = coordinate_parts.next().unwrap_or("jar");
@@ -467,6 +479,7 @@ fn maven_path(coordinate: &str) -> Result<PathBuf> {
         path.push(segment);
     }
     path.push(parts[1]);
+    path.push(parts[2]);
     let classifier = parts.get(3).map(|classifier| format!("-{classifier}")).unwrap_or_default();
     path.push(format!("{}-{}{}.{}", parts[1], parts[2], classifier, extension));
     safe_relative_path(&path.to_string_lossy())

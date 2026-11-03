@@ -111,6 +111,20 @@ impl Database {
         game_dir: &str,
         version_id: Option<&str>,
     ) -> Result<Instance> {
+        let id = Uuid::new_v4().to_string();
+        self.create_instance_with_id(&id, name, game_dir, version_id)
+    }
+
+    pub fn create_instance_with_id(
+        &self,
+        id: &str,
+        name: &str,
+        game_dir: &str,
+        version_id: Option<&str>,
+    ) -> Result<Instance> {
+        Uuid::parse_str(id).map_err(|_| {
+            LauncherError::InvalidInput("instance identifier is invalid".to_owned())
+        })?;
         let name = validate_instance_name(name)?;
         if game_dir.trim().is_empty() {
             return Err(LauncherError::InvalidInput(
@@ -118,7 +132,7 @@ impl Database {
             ));
         }
         let instance = Instance {
-            id: Uuid::new_v4().to_string(),
+            id: id.to_owned(),
             name,
             game_dir: game_dir.to_owned(),
             version_id: version_id.map(str::to_owned),
@@ -337,6 +351,18 @@ mod tests {
         let stored = db.get_instance(&created.id).unwrap();
         assert_eq!(stored.name, "Survival");
         assert_eq!(stored.version_id.as_deref(), Some("1.21.4"));
+    }
+
+    #[test]
+    fn creates_instance_with_a_reserved_valid_id() {
+        let db = Database::in_memory().unwrap();
+        let id = "1a8c91d6-2c84-49b6-a251-93e54684a45d";
+        let created = db
+            .create_instance_with_id(id, "Downloaded version", "/managed/instance", Some("1.21.4"))
+            .unwrap();
+        assert_eq!(created.id, id);
+        assert_eq!(db.get_instance(id).unwrap().game_dir, "/managed/instance");
+        assert!(db.create_instance_with_id("invalid-id", "Duplicate", "/other", None).is_err());
     }
 
     #[test]
