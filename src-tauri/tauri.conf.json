@@ -28,6 +28,8 @@
     "category": "Game",
     "icon": ["icons/icon.png"],
     "resources": {
+      "../LICENSE": "LICENSE",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
       "binaries/horizon-runtime.exe": "horizon/horizon-runtime.exe",
       "horizon-upstream/LICENSE": "horizon-source/LICENSE",
       "horizon-upstream/UPSTREAM.md": "horizon-source/UPSTREAM.md",

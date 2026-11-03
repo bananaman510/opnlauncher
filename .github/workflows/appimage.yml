@@ -1,0 +1,48 @@
+name: Build Linux AppImage
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-appimage:
+    name: Build AppImage artifact
+    runs-on: ubuntu-24.04
+    env:
+      CCACHE_DISABLE: "1"
+    steps:
+      - name: Check out selected ref
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential curl file libasound2-dev libayatana-appindicator3-dev \
+            libssl-dev libudev-dev libwebkit2gtk-4.1-dev librsvg2-dev \
+            libxdo-dev pkg-config wget
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install locked JavaScript dependencies
+        run: npm ci
+
+      - name: Build AppImage
+        run: npm run tauri -- build --bundles appimage
+
+      - name: Save AppImage as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opnlauncher-linux-appimage-${{ github.sha }}
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 14

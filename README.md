@@ -1,8 +1,10 @@
-# OpnLauncher
+# OpnLauncher — 0.1.0-dev.16
 
 OpnLauncher is an independent, local-first desktop launcher for Minecraft Java Edition. It is built with Tauri 2, Rust, React, TypeScript, and SQLite, with Linux as the current development platform.
 
-The project is an **early development prototype**. The vanilla install and launch workflows, Fabric and Forge setup, provider-backed mod management, and a separate experimental Horizon profile path are being developed incrementally. Some important flows have not yet been validated in a live desktop session with real game files. Read [Current status and limitations](#current-status-and-limitations) before relying on it for valuable worlds.
+> **Development pre-release — not a stable or production release.** Version `0.1.0-dev.16` is shared early to invite feedback and contributions. Features and local data formats may change, and bugs are expected. Back up worlds and important files before testing. This version does not promise a stable API.
+
+The project is an early development prototype. Vanilla installation and launching, Fabric and Forge setup, provider-backed mod management, and a separate experimental Horizon profile path are implemented incrementally. The maintainer has reported successful local AppImage and Minecraft/Horizon launches; this source review does not independently reproduce those desktop sessions or validate the app on every supported distribution. Read [Current status and limitations](#current-status-and-limitations) before relying on it for valuable worlds.
 
 OpnLauncher is not affiliated with, endorsed by, or associated with Mojang Studios or Microsoft. Minecraft is a trademark of Mojang Synergies AB. This project does not bundle or redistribute Minecraft game files. When you request an installation, it fetches official files using Mojang's version metadata.
 
@@ -27,11 +29,11 @@ The interface includes an overview, instance library, Minecraft version browser,
 
 - Linux desktop with GTK 3 and WebKitGTK 4.1 development libraries.
 - Rust stable **1.90 or later**, including Cargo.
-- Node.js **20 or later** and npm.
+- Node.js **22.12 or later** and npm. This is required by the current test tooling.
 - Java for launching Minecraft. Horizon resource preparation additionally needs a JDK 25 installation, including `javac`.
 - An internet connection for downloading the version list, game files, loaders, or mods. Local instance management and settings work without downloading new content.
 
-Install Rust with [rustup](https://rustup.rs/) if it is not already installed. Install Node.js and npm using your distribution or the [official Node.js downloads](https://nodejs.org/en/download/).
+Install Rust with [rustup](https://rustup.rs/) if it is not already installed. Add the formatting and lint tools used by CI with `rustup component add rustfmt clippy`. Install Node.js and npm using your distribution or the [official Node.js downloads](https://nodejs.org/en/download/).
 
 ### Fedora
 
@@ -87,7 +89,7 @@ chmod +x ./OpnLauncher_VERSION_amd64.AppImage
 ./OpnLauncher_VERSION_amd64.AppImage
 ```
 
-Replace the example filename with the generated file's name. This produces a **local development build**; this repository does not currently provide a published AppImage download. AppImage portability depends on the system it was built on and the target system's libraries and desktop environment. Build and run it on the Linux distributions you intend to support. See Tauri's [AppImage guide](https://v2.tauri.app/distribute/appimage/) for its packaging details and limitations.
+Replace the example filename with the generated file's name. This produces a **local development build**. The manual GitHub Actions workflow can also build an AppImage and save it as a temporary workflow artifact; it does not create a tag, GitHub release, or public download automatically. AppImage portability depends on the system it was built on and the target system's libraries and desktop environment. Build and run it on the Linux distributions you intend to support. See Tauri's [AppImage guide](https://v2.tauri.app/distribute/appimage/) for its packaging details and limitations.
 
 ## First launch and a basic play setup
 
@@ -142,7 +144,7 @@ Then:
 4. Choose the Java 25 runtime and select **Download files & prepare Horizon**.
 5. Select the Horizon profile and local developer profile, then launch. The client and prepared resource directory are managed automatically.
 
-When reusing a local Minecraft installation, OpnLauncher copies only files that match Mojang's published size and SHA-1 metadata into its private Horizon cache. It does not write into the selected source folder. Missing or invalid files are downloaded from Mojang. Before preparation, OpnLauncher ensures the exact Minecraft 26.3 version manifest pinned by Horizon's included research lock is available in its private preparer cache, fetching it from Mojang on first use and checking its SHA-1 and client/server artifact identities. Preparation also imports Horizon's sounds from the verified Minecraft asset store (about 380 MB) before checking that resources are complete. Horizon profiles keep their worlds and personal settings separate from Java instances. The integration is experimental and has not yet been validated in a live Horizon game session; see [Horizon integration notes](docs/HORIZON.md). Horizon's MIT license and third-party notices are in `src-tauri/horizon-upstream/`.
+When reusing a local Minecraft installation, OpnLauncher copies only files that match Mojang's published size and SHA-1 metadata into its private Horizon cache. It does not write into the selected source folder. Missing or invalid files are downloaded from Mojang. Before preparation, OpnLauncher ensures the exact Minecraft 26.3 version manifest pinned by Horizon's included research lock is available in its private preparer cache, fetching it from Mojang on first use and checking its SHA-1 and client/server artifact identities. Preparation also imports Horizon's sounds from the verified Minecraft asset store (about 380 MB) before checking that resources are complete. Horizon profiles keep their worlds and personal settings separate from Java instances. The integration is experimental and fixed to Minecraft 26.3. The maintainer has reported successful local play, but this preparation pass has not independently verified a live game session; see [Horizon integration notes](docs/HORIZON.md). Horizon's MIT license and third-party notices are in `src-tauri/horizon-upstream/` and summarized in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ### Horizon audio and preparation troubleshooting
 
@@ -181,25 +183,29 @@ Keep your own backups of worlds and important configuration. The prototype does 
 
 ## Development checks
 
-Run the frontend checks:
+Install the locked JavaScript dependencies and run the frontend checks:
 
 ```sh
+npm ci
 npm run build
 npm run test
 ```
 
-Run the Rust library tests and desktop backend check:
+Run Rust formatting, library tests, and the desktop backend check:
 
 ```sh
-cargo test --offline --no-default-features --lib --manifest-path src-tauri/Cargo.toml
-cargo check --offline --features desktop --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo fmt --manifest-path src-tauri/horizon-runtime/Cargo.toml -- --check
+cargo test --locked --no-default-features --lib --manifest-path src-tauri/Cargo.toml
+npm run horizon:build:release
+cargo check --locked --features desktop --manifest-path src-tauri/Cargo.toml
 ```
 
-These checks do not prove that provider downloads, loader installers, a Tauri window, or a real Minecraft/Horizon session work on a particular machine. Verify those separately before using important data.
+GitHub Actions runs the same Linux checks on pushes and pull requests. A separate manually started workflow builds a Linux AppImage artifact for inspection; it does not publish a release. These automated checks do not prove that provider downloads, loader installers, a Tauri window, or a real Minecraft/Horizon session work on every machine. Verify those separately before using important data.
 
 ## Repository and contribution policy
 
-Development currently uses a private, self-hosted Forgejo repository. Forgejo is the primary development remote; there is no automatic GitHub mirror or publication. GitHub publication is planned after the project is sufficiently stable and has completed its release-preparation review. See [CONTRIBUTING.md](CONTRIBUTING.md) for the project workflow and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
+Forgejo remains the primary development repository. A GitHub copy is a deliberate public development snapshot for review and community contributions; it is not automatically mirrored, and GitHub does not replace Forgejo as the source of truth. Public releases and tags are created only after maintainer review. See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
 
 The project uses Semantic Versioning and is currently in the `0.1.0` development series. The human-readable history is in [CHANGELOG.md](CHANGELOG.md). Development commits do not imply a release, and this repository does not create release tags automatically.
 
@@ -208,15 +214,17 @@ Useful project references:
 - [Architecture](ARCHITECTURE.md)
 - [Privacy](PRIVACY.md)
 - [Security policy](SECURITY.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
+- [0.1.0-dev.16 development preview notes](docs/RELEASE_NOTES_0.1.0-dev.16.md)
 - [Feature audit](docs/FEATURE_AUDIT.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Horizon setup and current limits](docs/HORIZON.md)
 
 ## Current status and limitations
 
-OpnLauncher is not yet feature-complete. Microsoft authentication, modpack management, NeoForge and Quilt installation, resource/shader pack support, backups, instance import/export, automatic update management, and cross-platform validation remain planned or unavailable. Very old Minecraft metadata may not install correctly. Java selection is currently explicit/manual, and version installation does not provide pause/resume or a complete repair workflow.
+OpnLauncher is not feature-complete. Microsoft authentication, modpack management, NeoForge and Quilt installation, resource/shader pack support, backups, instance import/export, automatic update management, and Windows/macOS validation remain unavailable. Very old Minecraft metadata may not install correctly. Java selection is currently explicit/manual, and version installation does not provide pause/resume or a complete repair workflow.
 
-Horizon support is experimental and has not been validated with a live game session. The project has no CI workflow or published release packages at this stage. See the [feature audit](docs/FEATURE_AUDIT.md) for the source-reviewed details and known gaps.
+Horizon support is experimental, currently fixed to Minecraft 26.3, and does not support Java/Fabric mods. A maintainer has reported successful local Horizon gameplay, but this has not been independently reproduced across systems. Automated checks cover the Linux development path; Windows/macOS, all loader/provider flows, and a complete security audit remain open. See the [feature audit](docs/FEATURE_AUDIT.md) for evidence and known gaps.
 
 ## License
 

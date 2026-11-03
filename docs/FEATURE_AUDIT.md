@@ -5,9 +5,9 @@ Scope: repository source and configuration only. No installed Minecraft director
 
 ## Summary
 
-OpnLauncher is a Tauri 2 desktop prototype using Rust, React, TypeScript, Vite, and SQLite. It has an official vanilla version browser and installer, Modrinth and CurseForge mod browsing, and Fabric and Forge loader installation for a selected instance. Loader and mod files are checked before installation. This source review did not perform live provider downloads, a Forge or Fabric installation, or a real Minecraft launch. Microsoft authentication is not implemented.
+OpnLauncher is a Tauri 2 desktop prototype using Rust, React, TypeScript, Vite, and SQLite. It has an official vanilla version browser and installer, Modrinth and CurseForge mod browsing, Fabric and Forge loader installation for a selected instance, and an experimental integrated Horizon engine. Loader and mod files are checked before installation. The maintainer has reported successful local Java and Horizon launches; this source review does not independently reproduce those sessions or perform live provider downloads. Microsoft authentication is not implemented.
 
-The implementation is small and can be extended without replacing its architecture. The launch path has useful unit coverage for inheritance, rules, argument expansion, and path validation, but it has not been proven against a real installed Minecraft version in a desktop session. The AppImage packaging step produced an artifact during local validation, but both the AppImage and unbundled binary failed GTK initialization in the available automation session. Treat GUI and game launch as unverified.
+The implementation is small and can be extended without replacing its architecture. The launch path has useful unit coverage for inheritance, rules, argument expansion, and path validation, but the current automated checks do not exercise a real installed Minecraft version in a desktop session. A prior automation session could not initialize GTK, while the maintainer later reported a working local AppImage and Horizon launch. Treat those as maintainer-reported results rather than an independently reproduced or cross-platform guarantee.
 
 ## Existing implementation
 
@@ -38,16 +38,16 @@ The implementation is small and can be extended without replacing its architectu
 - Instance isolation, JVM arguments, resolution, environment variables, import/export, backups, tags, playtime, and file browsing are not implemented.
 - Fabric and Forge installation are implemented; modpack import/update, NeoForge and Quilt installation, resource/shader pack management, and automatic mod updates are not implemented.
 - Settings include theme/accent, preferred and custom Java runtimes, new-instance memory defaults, loader management, local storage summaries, privacy details, and about. Language, download concurrency, proxy, accessibility, backup, and update controls are not implemented.
-- There is no CI workflow, release/update verification, or Windows/macOS validation in the repository.
+- Linux CI, dependency audit workflows, and a manual AppImage artifact workflow are configured. They do not publish Git tags or GitHub releases. There is no application updater or Windows/macOS validation.
 
 ## Tests and validation
 
 - Rust unit tests cover SQLite instance/profile/version switching and mod source records, Java version parsing, local installation inspection, version ordering, launch metadata merging, argument rules, path validation, OS matching, Java version defaults, mod-loader detection, loader path/version helpers, CurseForge Minecraft-version filtering, provider query encoding, safe provider/image/file URLs, and replacement when a mod version uses a new filename.
 - Frontend tests cover local date/time and Java labels, compatible mod-version selection, and duplicate mod detection.
 - There are no Tauri command integration tests, real-game launch tests, UI automation tests, live installer tests, or cross-platform tests. Installer helper tests validate metadata/path planning but do not contact Mojang.
-- Current task checks: `cargo test --offline --no-default-features --lib --manifest-path src-tauri/Cargo.toml` passed 43 Rust tests; `npm run test` passed 10 frontend tests; `npm run build` passed TypeScript and Vite; `cargo check --offline --features desktop --manifest-path src-tauri/Cargo.toml` passed; `npm run tauri -- build --no-bundle` built `src-tauri/target/release/opnlauncher`.
-- The desktop executable was not launched. Live loader API responses, installer execution, GUI behavior, and Minecraft launch remain unverified. AppImage bundling was not attempted in this pass.
-- Rust formatting could not be checked because the Rust formatting component is not installed; installing it would write outside the project folder.
+- On the preparation branch, the frontend production build passed and all 10 frontend tests passed with Vitest 5.1.0. `npm audit --audit-level=low` reported zero vulnerabilities after updating the development test runner.
+- The Rust library suite passed all 59 tests, the Linux Tauri desktop backend check passed, and the bundled Horizon runtime built with Linux audio enabled. The Linux AppImage was produced and its bundled license/attribution resources were inspected; the application was not launched from that artifact during this review.
+- The CI, security-audit, and manual AppImage workflow files parse as YAML. GitHub Actions have not run because this preparation branch is not connected to a GitHub repository. Rust formatting and Clippy were not run locally because their Rust components are unavailable; CI installs them. The RustSec `cargo audit` job is configured but has not run in GitHub.
 
 ## Issues and architectural observations
 
@@ -58,7 +58,7 @@ The implementation is small and can be extended without replacing its architectu
 5. **Schema evolution:** the database creates tables with `CREATE TABLE IF NOT EXISTS` but has no schema-versioned migrations.
 6. **UI organization:** most frontend behavior lives in one `App.tsx` file. It is acceptable for the current small prototype, but feature work should extract focused components and services as the UI grows.
 7. **Version display:** the UI now reads the displayed version from `package.json`; keep the Rust package metadata synchronized for desktop builds.
-8. **Runtime evidence:** no actual installed game files were used for this audit, so successful in-game launch, log capture, and preservation of existing worlds are not established.
+8. **Runtime evidence:** automated validation did not use an installed game or user worlds. Successful in-game launch, log capture, and preservation of real-world data are maintainer-reported and are not established by these tests.
 
 ## Recommended implementation order
 
@@ -67,6 +67,6 @@ The implementation is small and can be extended without replacing its architectu
 3. Implement Microsoft authentication and entitlement verification with OS credential storage before enabling authenticated launch in release builds.
 4. Improve instance isolation, deletion/forget semantics, backups, and import/export.
 5. Validate Fabric and Forge installations with legitimate game files, then expand modpack and loader formats incrementally.
-6. Complete diagnostics, privacy/security review, Linux distribution validation, Windows/macOS support, CI, and publication preparation only when explicitly requested.
+6. Complete diagnostics, privacy/security review, Linux distribution validation, Windows/macOS support, and the remaining publication checklist before a stable release.
 
 This feature set is an incremental foundation; several planned capabilities remain open. Account authentication, modpacks, backup workflows, additional loader installers, advanced instance controls, and distribution work remain open roadmap items.

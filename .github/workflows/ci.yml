@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-checks:
+    name: Linux checks
+    runs-on: ubuntu-24.04
+    env:
+      CCACHE_DISABLE: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential curl file libasound2-dev libayatana-appindicator3-dev \
+            libssl-dev libudev-dev libwebkit2gtk-4.1-dev librsvg2-dev \
+            libxdo-dev pkg-config wget
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install locked JavaScript dependencies
+        run: npm ci
+
+      - name: Check frontend types and build
+        run: npm run build
+
+      - name: Run frontend tests
+        run: npm run test
+
+      - name: Check Rust formatting
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+          cargo fmt --manifest-path src-tauri/horizon-runtime/Cargo.toml -- --check
+
+      - name: Run Rust library tests
+        run: cargo test --locked --no-default-features --lib --manifest-path src-tauri/Cargo.toml
+
+      - name: Build the bundled Horizon runtime
+        run: npm run horizon:build:release
+
+      - name: Check the Tauri desktop backend
+        run: cargo check --locked --features desktop --manifest-path src-tauri/Cargo.toml
+
+      - name: Run Rust lints
+        run: cargo clippy --locked --no-default-features --lib --manifest-path src-tauri/Cargo.toml -- -D warnings

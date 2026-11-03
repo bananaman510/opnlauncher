@@ -8,6 +8,7 @@ All notable project changes are recorded here. This project follows Semantic Ver
 
 - Complete Horizon preparation now imports the verified Minecraft sound assets before checking resource completeness, matching Horizon preparer's `--complete` behavior.
 - Linux Horizon runtime builds now require ALSA development files so AppImages cannot silently omit game audio; missing `libudev` only disables optional controller support.
+- Updated the development test runner to the supported, patched Vitest 5 line after the dependency audit identified critical advisories in the previous Vitest release.
 
 ## [0.1.0-dev.15] - Unreleased
 

@@ -33,4 +33,4 @@ Local profiles are for offline single-player development and appropriately confi
 
 ## Current limits
 
-Horizon support is experimental and fixed to Minecraft 26.3, matching the vendored upstream source. The game process and resource preparer are integrated, but a live game session has not yet been verified in this implementation. Java mods, Modrinth/CurseForge browsing for Horizon, and `.hnmod` code-mod management are not supported. The Horizon Mods page handles local `.hmod` content files only.
+Horizon support is experimental and fixed to Minecraft 26.3, matching the vendored upstream source. The maintainer has reported successful local play. This repository review does not independently reproduce that session or establish compatibility across machines. Java mods, Modrinth/CurseForge browsing for Horizon, and `.hnmod` code-mod management are not supported. The Horizon Mods page handles local `.hmod` content files only.

@@ -1,0 +1,47 @@
+name: Dependency security checks
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "23 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  npm-audit:
+    name: npm dependency audit
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check locked npm dependencies
+        run: npm audit --audit-level=high
+
+  rust-audit:
+    name: Rust dependency audit
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Check OpnLauncher dependencies
+        run: cargo audit --file src-tauri/Cargo.lock
+
+      - name: Check Horizon runtime dependencies
+        run: cargo audit --file src-tauri/horizon-runtime/Cargo.lock

@@ -17,6 +17,6 @@ Harassment, discrimination, personal attacks, intimidation, sexualized conduct, 
 
 ## Enforcement
 
-Project maintainers are responsible for clarifying and enforcing this code. Report conduct concerns privately through the project's maintainer contact in Forgejo. Maintainers will review reports fairly and may remove, edit, or reject contributions that violate this code.
+Project maintainers are responsible for clarifying and enforcing this code. Report conduct concerns privately using a reporting or contact option available from the repository host; do not post private or sensitive details in a public issue. Maintainers will review reports fairly and may remove, edit, or reject contributions that violate this code.
 
 This code is adapted from the Contributor Covenant, version 2.1: https://www.contributor-covenant.org/version/2/1/code_of_conduct.html
