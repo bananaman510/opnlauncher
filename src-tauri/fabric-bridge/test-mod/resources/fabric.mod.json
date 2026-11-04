@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "opnlauncher_horizon_bridge_probe",
+  "version": "1.0.0",
+  "name": "OpnLauncher Horizon Bridge Probe",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "org.opnlauncher.horizonfabricprobe.FabricBridgeProbeMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "26.3",
+    "fabric-api": "*",
+    "fabric-key-mapping-api-v1": "*"
+  }
+}

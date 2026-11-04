@@ -17,7 +17,7 @@ use zip::ZipArchive;
 use crate::database::{Database, ModInstallSource};
 use crate::error::{LauncherError, Result};
 use crate::minecraft::is_safe_id;
-use crate::models::Instance;
+use crate::models::{Instance, InstanceEngine};
 
 const MODRINTH_API: &str = "https://api.modrinth.com/v2";
 const CURSEFORGE_API: &str = "https://api.curseforge.com/v1";
@@ -435,9 +435,38 @@ pub fn remove_mod_files(database: &Database, instance_id: &str, file_names: &[St
 pub fn inspect_instance(database: &Database, instance_id: &str) -> Result<ModInstanceContext> {
     let instance = database.get_instance(instance_id)?;
     let game_dir = canonical_game_directory(&instance)?;
+    if instance.engine == InstanceEngine::Horizon && !instance.horizon_fabric_enabled {
+        if instance.version_id.as_deref() != Some("26.3") {
+            return Err(LauncherError::Unsupported(
+                "the Horizon Fabric catalogue is currently filtered for Minecraft 26.3".to_owned(),
+            ));
+        }
+        let shared_game_directory = database
+            .list_instances()?
+            .into_iter()
+            .filter(|other| other.id != instance.id)
+            .filter_map(|other| fs::canonicalize(other.game_dir).ok())
+            .any(|other_dir| other_dir == game_dir);
+        return Ok(ModInstanceContext {
+            instance_id: instance.id,
+            instance_name: instance.name,
+            game_dir: game_dir.to_string_lossy().into_owned(),
+            minecraft_version: Some("26.3".to_owned()),
+            // This selects compatible Fabric builds in provider APIs. Horizon does not load
+            // Fabric Loader; its opt-in bridge only adapts code-free assets/data at startup.
+            loader: Some("fabric".to_owned()),
+            version_id: instance.version_id,
+            shared_game_directory,
+        });
+    }
     let mut minecraft_version = None;
     let mut loader = None;
-    if let Some(version_id) = instance.version_id.as_deref() {
+    let selected_version_id = if instance.engine == InstanceEngine::Horizon {
+        instance.horizon_fabric_version_id.as_deref()
+    } else {
+        instance.version_id.as_deref()
+    };
+    if let Some(version_id) = selected_version_id {
         if is_safe_id(version_id) {
             let metadata_path = game_dir
                 .join("versions")
@@ -473,7 +502,7 @@ pub fn inspect_instance(database: &Database, instance_id: &str) -> Result<ModIns
         game_dir: game_dir.to_string_lossy().into_owned(),
         minecraft_version,
         loader,
-        version_id: instance.version_id,
+        version_id: selected_version_id.map(str::to_owned),
         shared_game_directory,
     })
 }
@@ -1587,7 +1616,13 @@ fn detect_loader(metadata: &Value, version_id: &str) -> Option<String> {
 }
 
 fn canonical_game_directory(instance: &Instance) -> Result<PathBuf> {
-    let game_dir = fs::canonicalize(&instance.game_dir).map_err(|_| LauncherError::NotFound(format!("game folder for {} is unavailable", instance.name)))?;
+    let configured_dir = PathBuf::from(&instance.game_dir);
+    let runtime_dir = if instance.engine == InstanceEngine::Horizon && instance.horizon_fabric_enabled {
+        configured_dir.join(".opnlauncher").join("fabric-java")
+    } else {
+        configured_dir
+    };
+    let game_dir = fs::canonicalize(&runtime_dir).map_err(|_| LauncherError::NotFound(format!("game folder for {} is unavailable", instance.name)))?;
     if !game_dir.is_dir() {
         return Err(LauncherError::Unsupported("the instance game folder is not a directory".to_owned()));
     }
@@ -1682,6 +1717,43 @@ mod tests {
         assert_eq!(detect_loader(&forge, "1.20.1-forge-47.2.0").as_deref(), Some("forge"));
         assert_eq!(detect_loader(&neo, "neoforge-21.1.0-1.21.1").as_deref(), Some("neoforge"));
         assert_eq!(detect_loader(&serde_json::json!({}), "1.21.1"), None);
+    }
+
+    #[test]
+    fn horizon_fabric_mode_reads_the_isolated_java_profile_not_the_rust_profile() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("horizon-fabric-mod-context-{}", Uuid::new_v4()));
+        let runtime = root.join(".opnlauncher").join("fabric-java");
+        let version_id = "fabric-loader-0.20.1-26.3";
+        let version_dir = runtime.join("versions").join(version_id);
+        fs::create_dir_all(&version_dir).unwrap();
+        fs::write(
+            version_dir.join(format!("{version_id}.json")),
+            serde_json::to_vec(&serde_json::json!({
+                "id": version_id,
+                "inheritsFrom": "26.3",
+                "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+                "libraries": []
+            })).unwrap(),
+        ).unwrap();
+
+        let database = Database::in_memory().unwrap();
+        let instance = database.create_horizon_instance("Horizon mod test", &root.to_string_lossy()).unwrap();
+        database.set_horizon_fabric_runtime(
+            &instance.id,
+            Some(version_id),
+            Some("/java-25/bin/java"),
+            true,
+        ).unwrap();
+
+        let context = inspect_instance(&database, &instance.id).unwrap();
+        assert_eq!(context.game_dir, fs::canonicalize(&runtime).unwrap().to_string_lossy());
+        assert_eq!(context.minecraft_version.as_deref(), Some("26.3"));
+        assert_eq!(context.loader.as_deref(), Some("fabric"));
+        assert_eq!(context.version_id.as_deref(), Some(version_id));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

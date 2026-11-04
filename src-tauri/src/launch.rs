@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use regex::Regex;
@@ -10,22 +10,44 @@ use zip::ZipArchive;
 use crate::error::{LauncherError, Result};
 use crate::java;
 use crate::minecraft::is_safe_id;
-use crate::models::{Instance, OfflineProfile};
+use crate::models::{Instance, LaunchProfile};
 
-#[derive(Debug)]
 pub struct LaunchPlan {
     pub executable: PathBuf,
     pub arguments: Vec<String>,
     pub working_directory: PathBuf,
+    /// Native libraries are private to each launch so concurrent processes never
+    /// replace files that another process is using.
+    pub native_directory: Option<PathBuf>,
 }
 
 pub struct LaunchRequest<'a> {
     pub instance: &'a Instance,
-    pub profile: &'a OfflineProfile,
+    pub profile: &'a LaunchProfile,
     pub java_path: &'a Path,
     pub native_cache: &'a Path,
     pub launcher_version: &'a str,
+    pub prepare_natives: bool,
 }
+
+const MAX_NATIVE_ARCHIVE_ENTRIES: usize = 100_000;
+const MAX_NATIVE_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_NATIVE_EXPANDED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_ASSET_INDEX_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_ASSET_INDEX_OBJECTS: usize = 100_000;
+
+#[derive(Clone, Copy)]
+struct NativeArchiveLimits {
+    entries: usize,
+    entry_bytes: u64,
+    total_bytes: u64,
+}
+
+const NATIVE_ARCHIVE_LIMITS: NativeArchiveLimits = NativeArchiveLimits {
+    entries: MAX_NATIVE_ARCHIVE_ENTRIES,
+    entry_bytes: MAX_NATIVE_ENTRY_BYTES,
+    total_bytes: MAX_NATIVE_EXPANDED_BYTES,
+};
 
 pub fn build_launch_plan(request: LaunchRequest<'_>) -> Result<LaunchPlan> {
     let game_dir = PathBuf::from(&request.instance.game_dir);
@@ -97,11 +119,12 @@ pub fn build_launch_plan(request: LaunchRequest<'_>) -> Result<LaunchPlan> {
         assets_dir.clone()
     };
 
+    let base_jar_id = base_version_id(&game_dir, version_id)?;
     let version_jar_id = metadata
         .get("jar")
         .and_then(Value::as_str)
         .filter(|id| is_safe_id(id))
-        .unwrap_or(version_id);
+        .unwrap_or(&base_jar_id);
     let game_jar = game_dir
         .join("versions")
         .join(version_jar_id)
@@ -116,8 +139,8 @@ pub fn build_launch_plan(request: LaunchRequest<'_>) -> Result<LaunchPlan> {
     let native_dir = request
         .native_cache
         .join(&request.instance.id)
-        .join(version_id);
-    recreate_cache_directory(&native_dir)?;
+        .join(version_id)
+        .join(uuid::Uuid::new_v4().to_string());
     let mut class_path = Vec::new();
     let mut native_jars = Vec::new();
     for library in metadata
@@ -136,9 +159,6 @@ pub fn build_launch_plan(request: LaunchRequest<'_>) -> Result<LaunchPlan> {
             native_jars.push(path);
         }
     }
-    for native in native_jars {
-        extract_native_archive(&native, &native_dir)?;
-    }
     class_path.push(game_jar);
     let class_path = class_path
         .iter()
@@ -154,10 +174,10 @@ pub fn build_launch_plan(request: LaunchRequest<'_>) -> Result<LaunchPlan> {
     substitutions.insert("game_assets".to_owned(), Value::String(game_assets_dir.to_string_lossy().into_owned()));
     substitutions.insert("assets_index_name".to_owned(), Value::String(asset_index.to_owned()));
     substitutions.insert("auth_uuid".to_owned(), Value::String(request.profile.uuid.clone()));
-    substitutions.insert("auth_access_token".to_owned(), Value::String(String::new()));
+    substitutions.insert("auth_access_token".to_owned(), Value::String(request.profile.access_token.clone()));
     substitutions.insert("auth_session".to_owned(), Value::String(String::new()));
     substitutions.insert("user_properties".to_owned(), Value::String("{}".to_owned()));
-    substitutions.insert("user_type".to_owned(), Value::String("legacy".to_owned()));
+    substitutions.insert("user_type".to_owned(), Value::String(request.profile.user_type.clone()));
     substitutions.insert("version_type".to_owned(), Value::String(
         metadata.get("type").and_then(Value::as_str).unwrap_or("custom").to_owned(),
     ));
@@ -167,7 +187,7 @@ pub fn build_launch_plan(request: LaunchRequest<'_>) -> Result<LaunchPlan> {
     substitutions.insert("classpath".to_owned(), Value::String(class_path));
     substitutions.insert("classpath_separator".to_owned(), Value::String(if cfg!(windows) { ";" } else { ":" }.to_owned()));
     substitutions.insert("library_directory".to_owned(), Value::String(game_dir.join("libraries").to_string_lossy().into_owned()));
-    substitutions.insert("auth_xuid".to_owned(), Value::String(String::new()));
+    substitutions.insert("auth_xuid".to_owned(), Value::String(request.profile.xuid.clone()));
     substitutions.insert("clientid".to_owned(), Value::String(String::new()));
     substitutions.insert("resolution_width".to_owned(), Value::String("1280".to_owned()));
     substitutions.insert("resolution_height".to_owned(), Value::String("720".to_owned()));
@@ -223,14 +243,167 @@ pub fn build_launch_plan(request: LaunchRequest<'_>) -> Result<LaunchPlan> {
         )));
     }
 
+    let native_directory = if request.prepare_natives {
+        extract_native_archives(&native_jars, &native_dir)?;
+        Some(native_dir)
+    } else {
+        None
+    };
+
     Ok(LaunchPlan {
         executable: request.java_path.to_path_buf(),
         arguments,
         working_directory: game_dir,
+        native_directory,
     })
 }
 
-fn resolve_version_metadata(game_dir: &Path, selected_id: &str) -> Result<Value> {
+pub(crate) fn resolve_version_metadata(game_dir: &Path, selected_id: &str) -> Result<Value> {
+    let (chain, missing) = read_version_metadata_chain(game_dir, selected_id, false)?;
+    debug_assert!(missing.is_none());
+    merge_version_metadata(chain)
+}
+
+/// Return the base Minecraft version inherited by a vanilla or loader profile.
+/// If a parent metadata file is missing, its identifier is still known from the
+/// child's `inheritsFrom` field and can be repaired from Mojang's manifest.
+pub(crate) fn base_version_id(game_dir: &Path, selected_id: &str) -> Result<String> {
+    let (chain, missing) = read_version_metadata_chain(game_dir, selected_id, true)?;
+    if let Some(path) = missing {
+        return path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|value| is_safe_id(value))
+            .map(str::to_owned)
+            .ok_or_else(|| LauncherError::Unsupported("missing version metadata has an invalid identifier".to_owned()));
+    }
+    chain
+        .last()
+        .and_then(|metadata| metadata.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| LauncherError::Unsupported("version metadata chain is empty".to_owned()))
+}
+
+/// List missing files required by a selected Java Minecraft profile.
+/// The result includes official asset objects and loader libraries, not only the
+/// files checked while building the Java command line.
+pub(crate) fn missing_minecraft_files(game_dir: &Path, selected_id: &str) -> Result<Vec<PathBuf>> {
+    let (chain, missing_metadata) = read_version_metadata_chain(game_dir, selected_id, true)?;
+    if let Some(path) = missing_metadata {
+        let relative = path.strip_prefix(game_dir).map_err(|_| {
+            LauncherError::Unsupported("missing version metadata escapes the instance folder".to_owned())
+        })?;
+        return Ok(vec![relative.to_path_buf()]);
+    }
+    let metadata = merge_version_metadata(chain)?;
+    let mut missing = Vec::new();
+
+    let base_jar_id = base_version_id(game_dir, selected_id)?;
+    let jar_id = metadata
+        .get("jar")
+        .and_then(Value::as_str)
+        .filter(|id| is_safe_id(id))
+        .unwrap_or(&base_jar_id);
+    add_missing_file(
+        game_dir,
+        PathBuf::from("versions").join(jar_id).join(format!("{jar_id}.jar")),
+        &mut missing,
+    )?;
+
+    for library in metadata
+        .get("libraries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if !rules_allow(library.get("rules")) {
+            continue;
+        }
+        if let Some(path) = library_artifact_candidate(library, game_dir)? {
+            add_missing_absolute_file(game_dir, path, &mut missing)?;
+        }
+        if let Some(path) = native_artifact_candidate(library, game_dir)? {
+            add_missing_absolute_file(game_dir, path, &mut missing)?;
+        }
+    }
+
+    let asset_id = metadata
+        .get("assetIndex")
+        .and_then(|index| index.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| metadata.get("assets").and_then(Value::as_str))
+        .ok_or_else(|| LauncherError::Unsupported("version has no asset index id".to_owned()))?;
+    if !is_safe_id(asset_id) {
+        return Err(LauncherError::Unsupported("version asset index identifier is invalid".to_owned()));
+    }
+    let index_relative = PathBuf::from("assets/indexes").join(format!("{asset_id}.json"));
+    let missing_before_index = missing.len();
+    add_missing_file(game_dir, index_relative.clone(), &mut missing)?;
+    if missing.len() != missing_before_index {
+        return Ok(missing);
+    }
+    let index_path = game_dir.join(&index_relative);
+    match fs::symlink_metadata(&index_path)? {
+        file if file.len() > MAX_ASSET_INDEX_BYTES => {
+            return Err(LauncherError::Unsupported("asset index exceeds its size limit".to_owned()));
+        }
+        _ => {}
+    }
+    let index_bytes = fs::read(&index_path)?;
+    let index: Value = serde_json::from_slice(&index_bytes)?;
+    let objects = index
+        .get("objects")
+        .and_then(Value::as_object)
+        .ok_or_else(|| LauncherError::Unsupported("asset index has no object map".to_owned()))?;
+    if objects.len() > MAX_ASSET_INDEX_OBJECTS {
+        return Err(LauncherError::Unsupported("asset index contains too many objects".to_owned()));
+    }
+    let is_virtual = index.get("virtual").and_then(Value::as_bool) == Some(true);
+    let virtual_id = metadata
+        .get("assets")
+        .and_then(Value::as_str)
+        .filter(|id| is_safe_id(id))
+        .unwrap_or(asset_id);
+    for (logical_name, object) in objects {
+        let hash = object
+            .get("hash")
+            .and_then(Value::as_str)
+            .filter(|hash| hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(|| LauncherError::Unsupported("asset index contains an invalid object hash".to_owned()))?
+            .to_ascii_lowercase();
+        let object_relative = PathBuf::from("assets/objects").join(&hash[..2]).join(&hash);
+        add_missing_file(game_dir, object_relative.clone(), &mut missing)?;
+        if is_virtual {
+            let logical = safe_relative_path(logical_name)?;
+            add_missing_file(
+                game_dir,
+                PathBuf::from("assets/virtual").join(virtual_id).join(logical),
+                &mut missing,
+            )?;
+        }
+    }
+
+    if let Some(file) = metadata
+        .get("logging")
+        .and_then(|logging| logging.get("client"))
+        .and_then(|client| client.get("file"))
+    {
+        if let Some(id) = file.get("id").and_then(Value::as_str) {
+            if !is_safe_id(id) {
+                return Err(LauncherError::Unsupported("logging configuration identifier is invalid".to_owned()));
+            }
+            add_missing_file(game_dir, PathBuf::from("assets/log_configs").join(id), &mut missing)?;
+        }
+    }
+    Ok(missing)
+}
+
+fn read_version_metadata_chain(
+    game_dir: &Path,
+    selected_id: &str,
+    allow_missing: bool,
+) -> Result<(Vec<Value>, Option<PathBuf>)> {
     let mut chain = Vec::new();
     let mut seen = HashSet::new();
     let mut current = selected_id.to_owned();
@@ -244,9 +417,16 @@ fn resolve_version_metadata(game_dir: &Path, selected_id: &str) -> Result<Value>
             .join("versions")
             .join(&current)
             .join(format!("{current}.json"));
-        let data = fs::read(&path).map_err(|error| {
-            LauncherError::Unsupported(format!("cannot read version metadata {}: {error}", path.display()))
-        })?;
+        let data = match fs::symlink_metadata(&path) {
+            Err(error) if allow_missing && error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((chain, Some(path)));
+            }
+            Err(error) => return Err(LauncherError::Unsupported(format!("cannot read version metadata {}: {error}", path.display()))),
+            Ok(file) if file.file_type().is_symlink() || !file.is_file() => {
+                return Err(LauncherError::Unsupported(format!("version metadata {} is not a regular file", path.display())));
+            }
+            Ok(_) => fs::read(&path)?,
+        };
         let metadata: Value = serde_json::from_slice(&data)?;
         if metadata.get("id").and_then(Value::as_str) != Some(current.as_str()) {
             return Err(LauncherError::Unsupported(format!(
@@ -261,11 +441,62 @@ fn resolve_version_metadata(game_dir: &Path, selected_id: &str) -> Result<Value>
             break;
         }
     }
-    let mut resolved = chain.pop().expect("version chain contains selected metadata");
+    Ok((chain, None))
+}
+
+fn merge_version_metadata(mut chain: Vec<Value>) -> Result<Value> {
+    let mut resolved = chain.pop().ok_or_else(|| LauncherError::Unsupported("version metadata chain is empty".to_owned()))?;
     while let Some(child) = chain.pop() {
         resolved = merge_metadata(resolved, child);
     }
     Ok(resolved)
+}
+
+fn add_missing_file(game_dir: &Path, relative: PathBuf, missing: &mut Vec<PathBuf>) -> Result<()> {
+    let relative = safe_relative_path(&relative.to_string_lossy())?;
+    add_missing_absolute_file(game_dir, game_dir.join(relative), missing)
+}
+
+fn add_missing_absolute_file(game_dir: &Path, path: PathBuf, missing: &mut Vec<PathBuf>) -> Result<()> {
+    let relative = path.strip_prefix(game_dir).map_err(|_| {
+        LauncherError::Unsupported("required game file escapes the instance folder".to_owned())
+    })?;
+    let relative = safe_relative_path(&relative.to_string_lossy())?;
+    let components = relative.components().collect::<Vec<_>>();
+    let mut current = game_dir.to_path_buf();
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(part) = component else {
+            return Err(LauncherError::Unsupported("required game file has an unsafe path".to_owned()));
+        };
+        current.push(part);
+        match fs::symlink_metadata(&current) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                push_missing_path(relative, missing);
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                push_missing_path(relative, missing);
+                return Ok(());
+            }
+            Ok(metadata) if index + 1 < components.len() && !metadata.is_dir() => {
+                push_missing_path(relative, missing);
+                return Ok(());
+            }
+            Ok(metadata) if index + 1 == components.len() && !metadata.is_file() => {
+                push_missing_path(relative, missing);
+                return Ok(());
+            }
+            Ok(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn push_missing_path(relative: PathBuf, missing: &mut Vec<PathBuf>) {
+    if !missing.contains(&relative) {
+        missing.push(relative);
+    }
 }
 
 fn merge_metadata(mut parent: Value, child: Value) -> Value {
@@ -421,13 +652,20 @@ fn system_os_version() -> Option<String> {
 }
 
 fn library_artifact_path(library: &Value, game_dir: &Path) -> Result<Option<PathBuf>> {
+    let path = library_artifact_candidate(library, game_dir)?;
+    if let Some(path) = path.as_ref() {
+        if !path.is_file() {
+            return Err(LauncherError::NotFound(format!("library {}", path.display())));
+        }
+    }
+    Ok(path)
+}
+
+fn library_artifact_candidate(library: &Value, game_dir: &Path) -> Result<Option<PathBuf>> {
     let artifact = library.get("downloads").and_then(|d| d.get("artifact"));
     if let Some(path) = artifact.and_then(|item| item.get("path")).and_then(Value::as_str) {
         let relative = safe_relative_path(path)?;
         let absolute = game_dir.join("libraries").join(relative);
-        if !absolute.is_file() {
-            return Err(LauncherError::NotFound(format!("library {}", absolute.display())));
-        }
         return Ok(Some(absolute));
     }
     let Some(coordinate) = library.get("name").and_then(Value::as_str) else {
@@ -435,13 +673,20 @@ fn library_artifact_path(library: &Value, game_dir: &Path) -> Result<Option<Path
     };
     let relative = maven_path(coordinate)?;
     let absolute = game_dir.join("libraries").join(relative);
-    if !absolute.is_file() {
-        return Err(LauncherError::NotFound(format!("library {}", absolute.display())));
-    }
     Ok(Some(absolute))
 }
 
 fn native_artifact_path(library: &Value, game_dir: &Path) -> Result<Option<PathBuf>> {
+    let path = native_artifact_candidate(library, game_dir)?;
+    if let Some(path) = path.as_ref() {
+        if !path.is_file() {
+            return Err(LauncherError::NotFound(format!("native library {}", path.display())));
+        }
+    }
+    Ok(path)
+}
+
+fn native_artifact_candidate(library: &Value, game_dir: &Path) -> Result<Option<PathBuf>> {
     let os = if cfg!(target_os = "macos") { "osx" } else { std::env::consts::OS };
     let Some(template) = library
         .get("natives")
@@ -459,11 +704,7 @@ fn native_artifact_path(library: &Value, game_dir: &Path) -> Result<Option<PathB
         .map(safe_relative_path)
         .transpose()?;
     let Some(path) = path else { return Ok(None) };
-    let absolute = game_dir.join("libraries").join(path);
-    if !absolute.is_file() {
-        return Err(LauncherError::NotFound(format!("native library {}", absolute.display())));
-    }
-    Ok(Some(absolute))
+    Ok(Some(game_dir.join("libraries").join(path)))
 }
 
 pub(crate) fn maven_path(coordinate: &str) -> Result<PathBuf> {
@@ -495,12 +736,61 @@ fn safe_relative_path(value: &str) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-fn extract_native_archive(archive_path: &Path, destination: &Path) -> Result<()> {
+fn extract_native_archives(archives: &[PathBuf], destination: &Path) -> Result<PathBuf> {
+    extract_native_archives_with_limits(archives, destination, NATIVE_ARCHIVE_LIMITS)
+}
+
+fn extract_native_archives_with_limits(
+    archives: &[PathBuf],
+    destination: &Path,
+    limits: NativeArchiveLimits,
+) -> Result<PathBuf> {
+    let parent = destination.parent().ok_or_else(|| {
+        LauncherError::Unsupported("native cache path has no parent directory".to_owned())
+    })?;
+    fs::create_dir_all(parent)?;
+    fs::create_dir(destination)?;
+    let mut seen_files = HashSet::new();
+    let mut entry_count = 0usize;
+    let mut expanded = 0u64;
+    let result = archives.iter().try_for_each(|archive| {
+        extract_native_archive(
+            archive,
+            destination,
+            &mut seen_files,
+            &mut entry_count,
+            &mut expanded,
+            limits,
+        )
+    });
+    if result.is_err() {
+        let _ = fs::remove_dir_all(destination);
+    }
+    result?;
+    Ok(destination.to_path_buf())
+}
+
+fn extract_native_archive(
+    archive_path: &Path,
+    destination: &Path,
+    seen_files: &mut HashSet<PathBuf>,
+    entry_count: &mut usize,
+    expanded: &mut u64,
+    limits: NativeArchiveLimits,
+) -> Result<()> {
     let file = File::open(archive_path)?;
     let mut archive = ZipArchive::new(file).map_err(|error| {
         LauncherError::Unsupported(format!("invalid native archive {}: {error}", archive_path.display()))
     })?;
     for index in 0..archive.len() {
+        *entry_count = entry_count.checked_add(1).ok_or_else(|| {
+            LauncherError::Unsupported("native archive entry count overflowed".to_owned())
+        })?;
+        if *entry_count > limits.entries {
+            return Err(LauncherError::Unsupported(
+                "native libraries have too many archive entries".to_owned(),
+            ));
+        }
         let mut entry = archive.by_index(index).map_err(|error| {
             LauncherError::Unsupported(format!("cannot read native archive entry: {error}"))
         })?;
@@ -516,31 +806,48 @@ fn extract_native_archive(archive_path: &Path, destination: &Path) -> Result<()>
         if relative.starts_with("META-INF") {
             continue;
         }
-        let output = destination.join(relative);
         if entry.is_dir() {
-            fs::create_dir_all(output)?;
-        } else {
-            let parent = output.parent().ok_or_else(|| {
-                LauncherError::Unsupported("invalid native archive output path".to_owned())
-            })?;
-            fs::create_dir_all(parent)?;
-            let mut file = File::create(output)?;
-            std::io::copy(&mut entry, &mut file)?;
-            file.flush()?;
+            fs::create_dir_all(destination.join(relative))?;
+            continue;
         }
-    }
-    Ok(())
-}
-
-fn recreate_cache_directory(path: &Path) -> Result<()> {
-    if path.exists() {
-        let metadata = fs::symlink_metadata(path)?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(LauncherError::Unsupported("native cache path is not a safe directory".to_owned()));
+        if !seen_files.insert(relative.clone()) {
+            return Err(LauncherError::Unsupported(format!(
+                "native archives contain a duplicate output path: {}",
+                relative.display()
+            )));
         }
-        fs::remove_dir_all(path)?;
+        if entry.size() > limits.entry_bytes {
+            return Err(LauncherError::Unsupported(format!(
+                "native archive entry exceeds the {} MiB limit",
+                limits.entry_bytes / (1024 * 1024)
+            )));
+        }
+        let output = destination.join(relative);
+        let parent = output.parent().ok_or_else(|| {
+            LauncherError::Unsupported("invalid native archive output path".to_owned())
+        })?;
+        fs::create_dir_all(parent)?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)?;
+        let mut limited = (&mut entry).take(limits.entry_bytes + 1);
+        let written = std::io::copy(&mut limited, &mut file)?;
+        if written > limits.entry_bytes {
+            return Err(LauncherError::Unsupported(
+                "native archive entry expanded beyond its allowed size".to_owned(),
+            ));
+        }
+        *expanded = expanded.checked_add(written).ok_or_else(|| {
+            LauncherError::Unsupported("native archive expanded size overflowed".to_owned())
+        })?;
+        if *expanded > limits.total_bytes {
+            return Err(LauncherError::Unsupported(
+                "native archives exceed the per-launch expanded-size limit".to_owned(),
+            ));
+        }
+        file.flush()?;
     }
-    fs::create_dir_all(path)?;
     Ok(())
 }
 
@@ -602,6 +909,103 @@ fn logging_config_path(metadata: &Value, game_dir: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
+
+    fn native_archive(root: &Path, name: &str, entries: &[(&str, &[u8])]) -> PathBuf {
+        let path = root.join(name);
+        let mut archive = ZipWriter::new(File::create(&path).unwrap());
+        for (entry, bytes) in entries {
+            archive
+                .start_file(*entry, SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(bytes).unwrap();
+        }
+        archive.finish().unwrap();
+        path
+    }
+
+    fn test_root() -> PathBuf {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/test-launch-repair")
+            .join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn write_profile_fixture(root: &Path) {
+        let base = root.join("versions/1.20.1");
+        let fabric = root.join("versions/fabric-loader-0.15.0-1.20.1");
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&fabric).unwrap();
+        fs::write(
+            base.join("1.20.1.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": "1.20.1",
+                "assetIndex": { "id": "5" },
+                "assets": "5",
+                "libraries": []
+            })).unwrap(),
+        ).unwrap();
+        fs::write(
+            fabric.join("fabric-loader-0.15.0-1.20.1.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": "fabric-loader-0.15.0-1.20.1",
+                "inheritsFrom": "1.20.1",
+                "libraries": [{
+                    "name": "net.fabricmc:fabric-loader:0.15.0",
+                    "downloads": { "artifact": { "path": "net/fabricmc/fabric-loader/0.15.0/fabric-loader-0.15.0.jar" } }
+                }]
+            })).unwrap(),
+        ).unwrap();
+        let index = root.join("assets/indexes/5.json");
+        fs::create_dir_all(index.parent().unwrap()).unwrap();
+        fs::write(index, br#"{"objects":{"lang/en_us.json":{"hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1}}}"#).unwrap();
+    }
+
+    #[test]
+    fn finds_missing_client_asset_and_loader_files_for_inherited_profile() {
+        let root = test_root();
+        write_profile_fixture(&root);
+        let selected = "fabric-loader-0.15.0-1.20.1";
+        assert_eq!(base_version_id(&root, selected).unwrap(), "1.20.1");
+        let missing = missing_minecraft_files(&root, selected).unwrap();
+        assert!(missing.contains(&PathBuf::from("versions/1.20.1/1.20.1.jar")));
+        assert!(missing.contains(&PathBuf::from("libraries/net/fabricmc/fabric-loader/0.15.0/fabric-loader-0.15.0.jar")));
+        assert!(missing.contains(&PathBuf::from("assets/objects/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")));
+
+        for relative in missing {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"x").unwrap();
+        }
+        assert!(missing_minecraft_files(&root, selected).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reports_a_missing_asset_index_for_repair() {
+        let root = test_root();
+        write_profile_fixture(&root);
+        fs::remove_file(root.join("assets/indexes/5.json")).unwrap();
+        let missing = missing_minecraft_files(&root, "fabric-loader-0.15.0-1.20.1").unwrap();
+        assert!(missing.contains(&PathBuf::from("assets/indexes/5.json")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn identifies_missing_inherited_metadata_and_keeps_its_base_version_id() {
+        let root = test_root();
+        write_profile_fixture(&root);
+        fs::remove_file(root.join("versions/1.20.1/1.20.1.json")).unwrap();
+        let selected = "fabric-loader-0.15.0-1.20.1";
+        assert_eq!(base_version_id(&root, selected).unwrap(), "1.20.1");
+        assert_eq!(
+            missing_minecraft_files(&root, selected).unwrap(),
+            vec![PathBuf::from("versions/1.20.1/1.20.1.json")]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn metadata_merge_inherits_arguments_and_replaces_duplicate_libraries() {
@@ -638,6 +1042,69 @@ mod tests {
         assert!(maven_path("org.example:game:1.0").is_ok());
         assert!(safe_relative_path("../../escape.jar").is_err());
         assert!(safe_relative_path("/tmp/absolute.jar").is_err());
+    }
+
+    #[test]
+    fn native_archive_expansion_limits_remove_partial_cache_output() {
+        let root = test_root();
+        let archive = native_archive(&root, "native.zip", &[("lib/example.so", b"12345")]);
+        let destination = root.join("cache");
+        let limits = NativeArchiveLimits {
+            entries: 10,
+            entry_bytes: 8,
+            total_bytes: 4,
+        };
+        let error = extract_native_archives_with_limits(&[archive], &destination, limits)
+            .unwrap_err();
+        assert!(error.to_string().contains("expanded-size limit"));
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_archives_reject_duplicate_output_paths() {
+        let root = test_root();
+        let first = native_archive(&root, "first.zip", &[("lib/example.so", b"one")]);
+        let second = native_archive(&root, "second.zip", &[("lib/example.so", b"two")]);
+        let destination = root.join("cache");
+        let error = extract_native_archives_with_limits(
+            &[first, second],
+            &destination,
+            NATIVE_ARCHIVE_LIMITS,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate output path"));
+        assert!(!destination.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_archives_allow_shared_directory_entries() {
+        let root = test_root();
+        let mut archives = Vec::new();
+        for name in ["first.zip", "second.zip"] {
+            let path = root.join(name);
+            let mut archive = ZipWriter::new(File::create(&path).unwrap());
+            archive
+                .add_directory("common/", SimpleFileOptions::default())
+                .unwrap();
+            archive
+                .start_file(format!("common/{name}.so"), SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(name.as_bytes()).unwrap();
+            archive.finish().unwrap();
+            archives.push(path);
+        }
+        let destination = root.join("cache");
+        extract_native_archives_with_limits(
+            &archives,
+            &destination,
+            NATIVE_ARCHIVE_LIMITS,
+        )
+        .unwrap();
+        assert!(destination.join("common/first.zip.so").is_file());
+        assert!(destination.join("common/second.zip.so").is_file());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

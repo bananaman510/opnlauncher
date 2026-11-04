@@ -31,6 +31,7 @@
       "../LICENSE": "LICENSE",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
       "binaries/horizon-runtime.exe": "horizon/horizon-runtime.exe",
+      "binaries/horizon-fabric-bridge.jar": "horizon/horizon-fabric-bridge.jar",
       "horizon-upstream/LICENSE": "horizon-source/LICENSE",
       "horizon-upstream/UPSTREAM.md": "horizon-source/UPSTREAM.md",
       "horizon-upstream/THIRD_PARTY_NOTICES.md": "horizon-source/THIRD_PARTY_NOTICES.md",

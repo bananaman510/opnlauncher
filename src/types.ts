@@ -35,9 +35,26 @@ export interface Instance {
   gameDir: string;
   versionId: string | null;
   javaPath: string | null;
+  horizonFabricEnabled: boolean;
+  horizonFabricVersionId: string | null;
+  horizonFabricJavaPath: string | null;
   memoryMb: number;
   createdAt: number;
   lastPlayedAt: number | null;
+}
+
+export interface PlaytimeSession {
+  id: string;
+  instanceId: string;
+  startedAt: number;
+  lastUpdatedAt: number;
+  endedAt: number | null;
+  durationSeconds: number;
+}
+
+export interface PlaytimeSummary {
+  lifetimeSeconds: number;
+  sessions: PlaytimeSession[];
 }
 
 export interface HorizonClientInfo {
@@ -61,6 +78,30 @@ export interface HorizonMod {
   enabled: boolean;
   size: number;
   valid: boolean;
+}
+
+export interface HorizonFabricModStatus {
+  fileName: string;
+  modId: string | null;
+  name: string | null;
+  version: string | null;
+  state: "compatible" | "skipped" | "invalid" | "disabled" | string;
+  detail: string;
+}
+
+export interface HorizonFabricBridgeSettings {
+  enabled: boolean;
+  codeEnabled: boolean;
+}
+
+export interface HorizonFabricBridgeStatus {
+  settings: HorizonFabricBridgeSettings;
+  compatibleCount: number;
+  skippedCount: number;
+  mods: HorizonFabricModStatus[];
+  codeCompatibleCount: number;
+  codeSkippedCount: number;
+  codeMods: HorizonFabricModStatus[];
 }
 
 export interface JavaRuntime {
@@ -89,6 +130,13 @@ export interface OfflineProfile {
   name: string;
   uuid: string;
   verified: boolean;
+  createdAt: number;
+}
+
+export interface MicrosoftAccount {
+  id: string;
+  name: string;
+  uuid: string;
   createdAt: number;
 }
 

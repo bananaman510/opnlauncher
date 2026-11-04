@@ -785,6 +785,14 @@ impl Game<'_> {
         // The Chat option's Hidden level takes the server's messages too.
         self.local_chat_line(text, Some(SYSTEM_INDICATOR), ChatSource::Server);
     }
+
+    /// Applies plain Fabric `Entity.sendSystemMessage` text on Horizon's game thread.
+    /// Mods cannot mutate chat state directly from the helper JVM.
+    pub(super) fn apply_fabric_system_message(&mut self, message: String) {
+        if self.screen == Screen::Playing && self.player.is_some() {
+            self.system_message(Text::literal(message));
+        }
+    }
     /// A player's chat line on the window's own chat: a guest's message on
     /// the server's own chat (`HostEvent::Chat`). `ChatListener`
     /// checks `canReceivePlayerMessages` for these, so Commands Only and

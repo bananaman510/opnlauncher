@@ -10,6 +10,14 @@ Horizon's additional third-party attributions and license texts are preserved at
 
 The CC BY 4.0 NeoForge icon is unmodified; the launcher scales it to display. Attribution and license details are in the Horizon notices. The GNU project's license list identifies CC BY 4.0 as GPL-compatible for artwork and other non-software material; Creative Commons requires appropriate credit, a license link, and an indication of changes when material is shared ([GNU license list](https://www.gnu.org/licenses/license-list.html), [CC BY 4.0 deed](https://creativecommons.org/licenses/by/4.0/)).
 
+## Fabric Loader interface declarations
+
+`src-tauri/fabric-bridge/java/net/fabricmc/` contains compile-only interface declarations for Fabric Loader's `GameProvider`, launcher, metadata, and helper types. They provide signatures needed to build OpnLauncher's bridge and are not packaged in the helper JAR. The Fabric Loader implementation and API classes are supplied by the user's selected Fabric installation at runtime. Fabric Loader is licensed under Apache-2.0; see the [upstream project](https://github.com/FabricMC/fabric-loader) and [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+
+## Fabric API lifecycle facade
+
+`src-tauri/fabric-bridge/java/net/fabricmc/fabric/api/` contains a small OpnLauncher-authored compatibility facade using the public Fabric API 26.3 `Event` and `ClientTickEvents` signatures. It does not include Fabric API implementation code. Its only mapped lifecycle event is `ClientTickEvents.END_CLIENT_TICK`; all other client tick events reject listener registration. Fabric API is Apache-2.0 licensed; see the [upstream project](https://github.com/FabricMC/fabric-api) and [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). OpnLauncher is an independent project and is not endorsed by FabricMC.
+
 ## Direct JavaScript dependencies
 
 | Package | License declared by package metadata |

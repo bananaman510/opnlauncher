@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { InstalledMod, ModProject, ModVersion } from "./types";
-import { filterAndSortModVersions, latestCompatibleModVersion, matchingInstalledMod } from "./modVersions";
+import { filterAndSortModVersions, latestCompatibleModUpdate, latestCompatibleModVersion, matchingInstalledMod } from "./modVersions";
 
 function version(
   id: string,
@@ -50,6 +50,21 @@ describe("latestCompatibleModVersion", () => {
     expect(latestCompatibleModVersion([
       version("wrong-game", { gameVersions: ["1.20.1"] }),
     ], "1.21.1", "fabric")).toBeNull();
+  });
+});
+
+describe("latestCompatibleModUpdate", () => {
+  it("returns a newer compatible release when the installed build is known", () => {
+    expect(latestCompatibleModUpdate([
+      version("old", { datePublished: "2025-01-01T00:00:00Z" }),
+      version("new", { datePublished: "2025-02-01T00:00:00Z" }),
+    ], "old", "1.21.1", "fabric")?.id).toBe("new");
+  });
+
+  it("does not offer updates when current version is unknown or already current", () => {
+    const versions = [version("current")];
+    expect(latestCompatibleModUpdate(versions, null, "1.21.1", "fabric")).toBeNull();
+    expect(latestCompatibleModUpdate(versions, "current", "1.21.1", "fabric")).toBeNull();
   });
 });
 

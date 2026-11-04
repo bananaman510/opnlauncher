@@ -1,6 +1,8 @@
-import { ArrowDownToLine, Check, CircleAlert, Cpu, FolderOpen, Gauge, HardDrive, Info, LoaderCircle, Plus, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
-import { useState } from "react";
-import type { DownloadProgress, HorizonClientInfo, Instance, JavaRuntime, MinecraftInstallation } from "../types";
+import { ArrowDownToLine, Check, CircleAlert, Cpu, ExternalLink, FolderOpen, Gauge, HardDrive, Info, LoaderCircle, Plus, RefreshCw, ShieldAlert, ShieldCheck, Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { DownloadProgress, HorizonClientInfo, Instance, JavaRuntime, LoaderVersion, MinecraftInstallation } from "../types";
 
 interface HorizonSettingsPageProps {
   instances: Instance[];
@@ -26,6 +28,8 @@ interface HorizonSettingsPageProps {
   height: number;
   fullscreen: boolean;
   onWindowChange: (value: { width: number; height: number; fullscreen: boolean }) => void;
+  onInstanceUpdated: (instance: Instance) => void;
+  onOpenMods: () => void;
   desktop: boolean;
 }
 
@@ -33,7 +37,92 @@ export function HorizonSettingsPage(props: HorizonSettingsPageProps) {
   const [minecraftFolderInput, setMinecraftFolderInput] = useState("");
   const [minecraftFolderError, setMinecraftFolderError] = useState("");
   const horizonInstances = props.instances.filter((instance) => instance.engine === "horizon");
+  const horizonInstance = props.selectedInstance?.engine === "horizon" ? props.selectedInstance : null;
   const compatibleInstallations = props.installations.filter((installation) => installation.versions.some((version) => version.id === "26.3"));
+  const [fabricVersions, setFabricVersions] = useState<LoaderVersion[]>([]);
+  const [fabricVersionsLoading, setFabricVersionsLoading] = useState(false);
+  const [fabricSetupError, setFabricSetupError] = useState("");
+  const [fabricSetupBusy, setFabricSetupBusy] = useState(false);
+  const [fabricJavaPath, setFabricJavaPath] = useState("");
+  const [fabricLoaderVersion, setFabricLoaderVersion] = useState("");
+  const [fabricDownloadId, setFabricDownloadId] = useState<string | null>(null);
+  const [fabricProgress, setFabricProgress] = useState<DownloadProgress | null>(null);
+
+  useEffect(() => {
+    if (!horizonInstance || !props.desktop) {
+      setFabricVersions([]);
+      setFabricVersionsLoading(false);
+      return;
+    }
+    let active = true;
+    setFabricVersionsLoading(true);
+    setFabricSetupError("");
+    setFabricJavaPath(horizonInstance.horizonFabricJavaPath ?? props.runtimes.find((runtime) => runtime.majorVersion >= 25)?.path ?? "");
+    setFabricLoaderVersion("");
+    void invoke<LoaderVersion[]>("list_loader_versions", { loader: "fabric", gameVersion: "26.3" })
+      .then((versions) => {
+        if (!active) return;
+        setFabricVersions(versions);
+        const installedVersion = horizonInstance.horizonFabricVersionId?.match(/^fabric-loader-(.+)-26[.]3$/)?.[1];
+        setFabricLoaderVersion(versions.some((version) => version.version === installedVersion)
+          ? installedVersion ?? ""
+          : versions.find((version) => version.stable)?.version ?? versions[0]?.version ?? "");
+      })
+      .catch((reason: unknown) => { if (active) setFabricSetupError(String(reason)); })
+      .finally(() => { if (active) setFabricVersionsLoading(false); });
+    return () => { active = false; };
+  }, [horizonInstance?.id, props.desktop, props.runtimes]);
+
+  useEffect(() => {
+    if (!fabricDownloadId) return;
+    let unlisten: UnlistenFn | undefined;
+    let stopped = false;
+    void listen<DownloadProgress>("download-progress", (event) => {
+      if (event.payload.downloadId === fabricDownloadId) setFabricProgress(event.payload);
+    }).then((dispose) => { if (stopped) dispose(); else unlisten = dispose; });
+    return () => { stopped = true; unlisten?.(); };
+  }, [fabricDownloadId]);
+
+  async function installFabricRuntime() {
+    if (!horizonInstance || !fabricJavaPath || !fabricLoaderVersion || fabricSetupBusy) return;
+    const downloadId = crypto.randomUUID();
+    setFabricDownloadId(downloadId);
+    setFabricProgress(null);
+    setFabricSetupError("");
+    setFabricSetupBusy(true);
+    try {
+      const updated = await invoke<Instance>("install_horizon_fabric_setup", {
+        instanceId: horizonInstance.id,
+        loaderVersion: fabricLoaderVersion,
+        javaPath: fabricJavaPath,
+        downloadId,
+      });
+      props.onInstanceUpdated(updated);
+      setFabricProgress((current) => current ? { ...current, phase: "Fabric setup complete" } : current);
+    } catch (reason) {
+      setFabricSetupError(String(reason));
+    } finally {
+      setFabricSetupBusy(false);
+      setFabricDownloadId(null);
+    }
+  }
+
+  async function cancelFabricSetup() {
+    if (!fabricDownloadId) return;
+    try { await invoke("cancel_download", { downloadId: fabricDownloadId }); }
+    catch (reason) { setFabricSetupError(String(reason)); }
+  }
+
+  async function setFabricRuntimeEnabled(enabled: boolean) {
+    if (!horizonInstance || fabricSetupBusy) return;
+    setFabricSetupError("");
+    try {
+      await invoke("set_horizon_fabric_runtime_enabled", { instanceId: horizonInstance.id, enabled });
+      props.onInstanceUpdated({ ...horizonInstance, horizonFabricEnabled: enabled });
+    } catch (reason) {
+      setFabricSetupError(String(reason));
+    }
+  }
 
   async function addMinecraftFolder() {
     setMinecraftFolderError("");
@@ -89,11 +178,24 @@ export function HorizonSettingsPage(props: HorizonSettingsPageProps) {
 
           <section className="settings-section-view">
             <div className="settings-section-heading"><h2>Selected profile settings</h2><p>These window settings are kept separately for each Horizon instance.</p></div>
-            {props.selectedInstance?.engine === "horizon" ? (
+            {horizonInstance ? (
               <div className="settings-group horizon-window-settings">
                 <div className="horizon-window-size"><label><span>Width</span><input className="field-control" aria-label="Horizon window width" type="number" min={640} max={8192} step={80} value={props.width} onChange={(event) => props.onWindowChange({ width: Number(event.target.value), height: props.height, fullscreen: props.fullscreen })} /></label><span aria-hidden="true">×</span><label><span>Height</span><input className="field-control" aria-label="Horizon window height" type="number" min={480} max={8192} step={80} value={props.height} onChange={(event) => props.onWindowChange({ width: props.width, height: Number(event.target.value), fullscreen: props.fullscreen })} /></label></div>
                 <label className="horizon-fullscreen"><span><strong>Start fullscreen</strong><small>Use the selected profile's preference when Horizon opens.</small></span><input type="checkbox" checked={props.fullscreen} onChange={(event) => props.onWindowChange({ width: props.width, height: props.height, fullscreen: event.target.checked })} /></label>
                 <div className="horizon-path-help"><Gauge size={14} /> Horizon is a native Rust game, so Java and Fabric/Forge settings do not apply.</div>
+                <section className="horizon-java-compat-card" aria-labelledby="horizon-java-compat-title">
+                  <div className="horizon-java-compat-heading"><span className="horizon-fabric-mark"><Sparkles size={18} /></span><div><p className="eyebrow">OPTIONAL · EXPERIMENTAL</p><h3 id="horizon-java-compat-title">Separate Java Minecraft + Fabric client</h3><p>Runs a private Minecraft Java 26.3 client with Fabric and unchanged Fabric JARs.</p></div></div>
+                  <div className="horizon-fabric-runtime-notice"><ShieldAlert size={16} /><span>This does not add Fabric support to the Rust Horizon engine or translate Java into Rust. When enabled, Play starts this separate Java Minecraft client. Switch it off to play Horizon Rust again. The clients keep separate worlds and mods, and individual Fabric mods may still be incompatible.</span></div>
+                  <label className={`horizon-fullscreen horizon-java-runtime-toggle ${horizonInstance.horizonFabricEnabled ? "is-enabled" : ""}`}><span><strong>Use the separate Java + Fabric client</strong><small>{horizonInstance.horizonFabricEnabled ? `Enabled · Play starts ${horizonInstance.horizonFabricVersionId ?? "the Java Fabric client"}` : horizonInstance.horizonFabricVersionId ? `Installed · ${horizonInstance.horizonFabricVersionId} · currently off` : "Off · Play starts the Rust Horizon client"}</small></span><input type="checkbox" role="switch" aria-label="Use the separate Java Fabric client for this Horizon profile" checked={horizonInstance.horizonFabricEnabled} disabled={!props.desktop || fabricSetupBusy || !horizonInstance.horizonFabricVersionId} onChange={(event) => void setFabricRuntimeEnabled(event.target.checked)} /></label>
+                  <div className="horizon-java-runtime-controls">
+                    <label><span>Java 25 runtime</span><span className="select-wrap"><select className="field-control" aria-label="Java runtime for Horizon Fabric" value={fabricJavaPath} onChange={(event) => setFabricJavaPath(event.target.value)}><option value="">Choose an installed Java 25 runtime</option>{props.runtimes.filter((runtime) => runtime.majorVersion >= 25).map((runtime) => <option key={runtime.path} value={runtime.path}>{runtime.version} · {runtime.vendor ?? "JDK"}</option>)}</select></span></label>
+                    <label><span>Fabric Loader build for Minecraft 26.3</span><span className="select-wrap"><select className="field-control" aria-label="Fabric Loader version for Horizon" value={fabricLoaderVersion} disabled={fabricVersionsLoading || fabricVersions.length === 0} onChange={(event) => setFabricLoaderVersion(event.target.value)}><option value="">{fabricVersionsLoading ? "Loading Fabric builds…" : "Choose a Fabric build"}</option>{fabricVersions.map((version) => <option key={version.version} value={version.version}>{version.version}{version.stable ? " · stable" : ""}</option>)}</select></span></label>
+                  </div>
+                  <div className="horizon-java-runtime-actions"><button className="secondary-button" type="button" disabled={!props.desktop || fabricSetupBusy || !fabricJavaPath || !fabricLoaderVersion} onClick={() => void installFabricRuntime()}>{fabricSetupBusy ? <LoaderCircle size={15} className="spin" /> : <ArrowDownToLine size={15} />}{fabricSetupBusy ? "Preparing Java + Fabric…" : horizonInstance.horizonFabricVersionId ? "Update Java + Fabric files" : "Install Java + Fabric files"}</button>{horizonInstance.horizonFabricEnabled && <button className="settings-quiet-button" type="button" onClick={props.onOpenMods}><ExternalLink size={14} /> Manage Fabric mods</button>}{fabricSetupBusy && <button className="settings-quiet-button" type="button" onClick={() => void cancelFabricSetup()}>Cancel</button>}</div>
+                  {fabricSetupBusy && fabricProgress && <div className="install-progress-card"><div><LoaderCircle className="spin" size={16} /><strong>{fabricProgress.phase}</strong><span>{fabricProgress.totalFiles ? `${fabricProgress.completedFiles} / ${fabricProgress.totalFiles} files` : "Preparing isolated files"}</span></div><div className="download-progress-track"><span style={{ width: `${fabricProgress.totalFiles ? Math.min(100, Math.round(fabricProgress.completedFiles / fabricProgress.totalFiles * 100)) : 0}%` }} /></div>{fabricProgress.currentFile && <small>{fabricProgress.currentFile}</small>}</div>}
+                  {fabricSetupError && <p className="settings-inline-error" role="alert"><CircleAlert size={14} /> {fabricSetupError}</p>}
+                  {props.runtimes.every((runtime) => runtime.majorVersion < 25) && <p className="horizon-path-help"><Info size={14} /> Add a Java 25 or newer runtime in Settings → Java Manager. This profile keeps its Java files, libraries, and mods in a private folder.</p>}
+                </section>
               </div>
             ) : <div className="settings-empty"><Info size={18} /><span>Select a Horizon profile to edit its window settings.</span></div>}
           </section>

@@ -2345,6 +2345,8 @@ struct Game<'a> {
     keys: HashSet<KeyCode>,
     // Physical input is separate from remapped and toggled movement keys.
     physical_keys: HashSet<KeyCode>,
+    /// Non-repeating physical presses waiting for the optional Fabric bridge's next start tick.
+    fabric_bridge_key_presses: Vec<u16>,
     physical_buttons: HashSet<MouseButton>,
     drag_button: Option<MouseButton>,
     /// Control + left click as a right click (macOS).
@@ -7212,6 +7214,7 @@ impl Game<'_> {
         if self.agent.hold_server {
             return Ok(());
         }
+        self.dispatch_fabric_tick(crate::fabric_bridge::FabricBridgeTickPhase::Start);
         // `Player.entityInteractionRange`/`blockInteractionRange` for the tick's
         // picks: the attribute carries creative's and a server's modifiers.
         self.entity_reach = self.interaction_range("minecraft:entity_interaction_range", 3.0, 5.0);
@@ -7231,7 +7234,11 @@ impl Game<'_> {
             }
         }
         if self.remote.is_some() {
-            return self.tick_remote();
+            let result = self.tick_remote();
+            if result.is_ok() {
+                self.dispatch_fabric_tick(crate::fabric_bridge::FabricBridgeTickPhase::End);
+            }
+            return result;
         }
         // Only a server ticks its own world from here: its players are guests, swapped in for
         // their turns (`as_guest`), and the window's player is a client of it.
@@ -7295,8 +7302,153 @@ impl Game<'_> {
         self.tick_command_extras();
         self.native_tick();
         self.tell_native_now();
-        self.tick_world(running)
+        self.tick_world(running)?;
+        self.dispatch_fabric_tick(crate::fabric_bridge::FabricBridgeTickPhase::End);
+        Ok(())
     }
+
+    /// Sends the appropriate Fabric client-tick phase without waiting for the
+    /// Java helper. Actions returned by earlier callbacks are applied on the
+    /// game thread, never by the helper JVM.
+    fn dispatch_fabric_tick(&mut self, phase: crate::fabric_bridge::FabricBridgeTickPhase) {
+        if self.window.is_none() {
+            return;
+        }
+        for action in crate::fabric_bridge::take_actions() {
+            if let Some(sprinting) = action.sprinting {
+                self.apply_fabric_sprinting(sprinting);
+            }
+            if let Some(velocity) = action.player_velocity {
+                self.apply_fabric_player_velocity(velocity);
+            }
+            if let Some(rotation) = action.player_rotation {
+                self.apply_fabric_player_rotation(rotation);
+            }
+            if let Some(message) = action.overlay_message {
+                self.apply_fabric_overlay_message(message, action.animate);
+            }
+            if let Some(message) = action.system_message {
+                self.apply_fabric_system_message(message);
+            }
+        }
+        if !crate::fabric_bridge::is_attached() {
+            return;
+        }
+        let player_snapshot = self.player.as_ref().map(|player| {
+            crate::fabric_bridge::FabricBridgePlayerSnapshot {
+                name: self.options.player_name(),
+                x: player.position.x,
+                y: player.position.y,
+                z: player.position.z,
+                velocity_x: player.velocity.x,
+                velocity_y: player.velocity.y,
+                velocity_z: player.velocity.z,
+                yaw: player.yaw,
+                pitch: player.pitch,
+                health: player.health.health(),
+                sprinting: player.sprinting,
+                on_ground: player.ground.on_ground,
+                game_time: self.world.game_time,
+                min_build_height: self.world.bottom_y(),
+                max_build_height: self.world.top_y(),
+                raining: self.world.weather.raining,
+                thundering: self.world.weather.thundering,
+                rain_level_previous: self.world.weather.rain_level.0,
+                rain_level_current: self.world.weather.rain_level.1,
+                thunder_level_previous: self.world.weather.thunder_level.0,
+                thunder_level_current: self.world.weather.thunder_level.1,
+                nearby_blocks: fabric_nearby_block_snapshots(
+                    &self.world,
+                    self.res.facts(),
+                    player.position.x,
+                    player.position.y,
+                    player.position.z,
+                ),
+            }
+        });
+        let overworld_clock_time = self.player.as_ref().map(|_| self.world.day_time);
+        let in_game = self.screen == Screen::Playing && self.player.is_some();
+        let mut down_keys = if in_game {
+            self.physical_keys
+                .iter()
+                .filter_map(|key| {
+                    horizon_client::keybinds::key_name(*key)
+                        .and_then(crate::fabric_bridge::minecraft_keyboard_key_code)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        down_keys.sort_unstable();
+        down_keys.dedup();
+        down_keys.truncate(64);
+        let start_phase = phase == crate::fabric_bridge::FabricBridgeTickPhase::Start;
+        let pressed_keys = if start_phase {
+            std::mem::take(&mut self.fabric_bridge_key_presses)
+        } else {
+            Vec::new()
+        };
+        let vanilla_input_flags = fabric_bridge_input_flags(&self.keys, &self.toggles, in_game);
+        let queued = match phase {
+            crate::fabric_bridge::FabricBridgeTickPhase::Start => {
+                crate::fabric_bridge::dispatch_start_tick(
+                    player_snapshot,
+                    overworld_clock_time,
+                    &down_keys,
+                    &pressed_keys,
+                    vanilla_input_flags,
+                )
+            }
+            crate::fabric_bridge::FabricBridgeTickPhase::End => {
+                crate::fabric_bridge::dispatch_end_tick(
+                    player_snapshot,
+                    overworld_clock_time,
+                    &down_keys,
+                    vanilla_input_flags,
+                )
+            }
+        };
+        if start_phase && !queued {
+            self.fabric_bridge_key_presses.extend(pressed_keys);
+        }
+    }
+
+    /// Applies the one mapped local-player mutation as Horizon's ordinary sprint key state.
+    /// The helper JVM never writes player state directly, and requests outside active play are ignored.
+    fn apply_fabric_sprinting(&mut self, sprinting: bool) {
+        if self.screen != Screen::Playing || self.player.is_none() {
+            return;
+        }
+        sync_fabric_sprint_mapping(&mut self.toggles, &mut self.keys, sprinting);
+    }
+
+    /// Applies a bounded Fabric velocity request to Horizon's local player on the game thread.
+    fn apply_fabric_player_velocity(&mut self, velocity: [f64; 3]) {
+        if self.screen != Screen::Playing {
+            return;
+        }
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        player.velocity = horizon_core::geometry::Vec3::new(velocity[0], velocity[1], velocity[2]);
+    }
+
+    /// Applies bounded look direction to the local player on Horizon's game thread.
+    fn apply_fabric_player_rotation(&mut self, rotation: [f32; 2]) {
+        if self.screen != Screen::Playing || self.player.is_none() {
+            return;
+        }
+        self.yaw = rotation[0];
+        self.pitch = rotation[1];
+        self.rope_rot_old = (self.yaw, self.pitch);
+        self.snap_player_model_pitch();
+        if let Some(player) = self.player.as_mut() {
+            player.yaw = self.yaw;
+            player.head_yaw = self.yaw;
+            player.pitch = self.pitch;
+        }
+    }
+
     /// What the tick runs after the local player's own update: effects, the
     /// world's entities and blocks, and the network hub.
     fn tick_world(&mut self, running: bool) -> Result<()> {
@@ -16588,6 +16740,17 @@ impl Game<'_> {
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && let PhysicalKey::Code(key) = event.physical_key
         {
+            if origin == input_trace::InputOrigin::User
+                && crate::fabric_bridge::is_attached()
+                && self.screen == Screen::Playing
+                && event.state == ElementState::Pressed
+                && !event.repeat
+                && self.fabric_bridge_key_presses.len() < 64
+                && let Some(code) = horizon_client::keybinds::key_name(key)
+                    .and_then(crate::fabric_bridge::minecraft_keyboard_key_code)
+            {
+                self.fabric_bridge_key_presses.push(code);
+            }
             if event.state == ElementState::Pressed {
                 self.physical_keys.insert(key);
                 horizon_client::keybinds::learn_layout(event);
@@ -16628,6 +16791,7 @@ impl Game<'_> {
     fn handle_window_event_inner(&mut self, event_loop: &dyn EventLoopCtl, mut event: WindowEvent) {
         if let WindowEvent::Focused(false) = &event {
             self.physical_keys.clear();
+            self.fabric_bridge_key_presses.clear();
             self.physical_buttons.clear();
             self.drag_button = None;
         }
@@ -18248,6 +18412,7 @@ impl<'a> Game<'a> {
             },
             keys: HashSet::new(),
             physical_keys: HashSet::new(),
+            fabric_bridge_key_presses: Vec::new(),
             physical_buttons: HashSet::new(),
             drag_button: None,
             right_click_emulation: Default::default(),
@@ -20948,6 +21113,93 @@ fn container_key_clones(button: MouseButton, action: KeyAction) -> bool {
     button == MouseButton::Middle && action != KeyAction::Release
 }
 
+/// Captures only loaded block facts within one block of the local player's feet.
+fn fabric_nearby_block_snapshots(
+    world: &World,
+    facts: &BlockFacts,
+    x: f64,
+    y: f64,
+    z: f64,
+) -> Vec<crate::fabric_bridge::FabricBridgeBlockSnapshot> {
+    if [x, y, z]
+        .iter()
+        .any(|value| !value.is_finite() || *value < f64::from(i32::MIN) || *value > f64::from(i32::MAX))
+    {
+        return Vec::new();
+    }
+    let center = [x.floor() as i32, y.floor() as i32, z.floor() as i32];
+    let mut snapshots = Vec::with_capacity(27);
+    for dy in -1..=1 {
+        let Some(block_y) = center[1].checked_add(dy) else { continue };
+        if block_y < world.bottom_y() || block_y >= world.top_y() {
+            continue;
+        }
+        for dz in -1..=1 {
+            let Some(block_z) = center[2].checked_add(dz) else { continue };
+            for dx in -1..=1 {
+                let Some(block_x) = center[0].checked_add(dx) else { continue };
+                if !world.loaded(block_x, block_z) {
+                    continue;
+                }
+                let state = world.block(block_x, block_y, block_z);
+                let state_facts = facts.get(state);
+                snapshots.push(crate::fabric_bridge::FabricBridgeBlockSnapshot {
+                    x: block_x,
+                    y: block_y,
+                    z: block_z,
+                    block_id: state_facts.name.to_string(),
+                    is_air: facts.is_air(state),
+                    full_collision: state_facts.full_collision,
+                    solid_render: state_facts.solid_render,
+                });
+            }
+        }
+    }
+    snapshots
+}
+
+/// Encodes Horizon's vanilla movement state for the read-only Fabric Options facade.
+/// `self.keys` contains the mapped vanilla actions, while sneak and sprint also retain toggle state.
+fn fabric_bridge_input_flags(
+    keys: &HashSet<KeyCode>,
+    toggles: &horizon_client::keymapping::ToggleKeys,
+    in_game: bool,
+) -> u8 {
+    use crate::fabric_bridge as bridge;
+
+    if !in_game {
+        return 0;
+    }
+
+    bridge::encode_vanilla_input_flags(
+        keys.contains(&KeyCode::KeyW),
+        keys.contains(&KeyCode::KeyS),
+        keys.contains(&KeyCode::KeyA),
+        keys.contains(&KeyCode::KeyD),
+        keys.contains(&KeyCode::Space),
+        toggles.is_down(SNEAK)
+            || keys.contains(&KeyCode::ShiftLeft)
+            || keys.contains(&KeyCode::ShiftRight),
+        toggles.is_down(SPRINT)
+            || keys.contains(&KeyCode::ControlLeft)
+            || keys.contains(&KeyCode::ControlRight),
+    )
+}
+
+/// Applies a mapped Fabric sprint request through Horizon's existing sprint-key state.
+fn sync_fabric_sprint_mapping(
+    toggles: &mut horizon_client::keymapping::ToggleKeys,
+    keys: &mut HashSet<KeyCode>,
+    sprinting: bool,
+) {
+    toggles.0[SPRINT].is_down = sprinting;
+    if sprinting {
+        keys.insert(KeyCode::ControlLeft);
+    } else {
+        keys.remove(&KeyCode::ControlLeft);
+    }
+}
+
 /// `VoxelShape.clip` of a fluid source's shape for a ray that starts in the
 /// source's own block `cell`: the face and point it hits, in `pick_fluid`'s
 /// `Hit` terms. `FlowingFluid.getShape` is the whole block under the same
@@ -21175,6 +21427,56 @@ fn debug_crosshair_drawn(
 mod tests {
     use super::*;
     use horizon_client::container_screen::{Button, Clicks, Release, Target};
+
+    #[test]
+    fn mapped_fabric_sprint_requests_use_the_native_sprint_key_state() {
+        let mut toggles = horizon_client::keymapping::ToggleKeys::default();
+        let mut keys = HashSet::new();
+
+        sync_fabric_sprint_mapping(&mut toggles, &mut keys, true);
+        assert!(toggles.is_down(SPRINT));
+        assert!(keys.contains(&KeyCode::ControlLeft));
+
+        sync_fabric_sprint_mapping(&mut toggles, &mut keys, false);
+        assert!(!toggles.is_down(SPRINT));
+        assert!(!keys.contains(&KeyCode::ControlLeft));
+    }
+
+    #[test]
+    fn fabric_bridge_input_snapshot_reports_rebound_actions_and_toggle_states() {
+        let mut keys = HashSet::from([
+            KeyCode::KeyW,
+            KeyCode::KeyS,
+            KeyCode::KeyA,
+            KeyCode::KeyD,
+            KeyCode::Space,
+        ]);
+        let mut toggles = horizon_client::keymapping::ToggleKeys::default();
+        toggles.0[SNEAK].is_down = true;
+        toggles.0[SPRINT].is_down = true;
+
+        assert_eq!(
+            fabric_bridge_input_flags(&keys, &toggles, true),
+            crate::fabric_bridge::VANILLA_INPUT_UP
+                | crate::fabric_bridge::VANILLA_INPUT_DOWN
+                | crate::fabric_bridge::VANILLA_INPUT_LEFT
+                | crate::fabric_bridge::VANILLA_INPUT_RIGHT
+                | crate::fabric_bridge::VANILLA_INPUT_JUMP
+                | crate::fabric_bridge::VANILLA_INPUT_SHIFT
+                | crate::fabric_bridge::VANILLA_INPUT_SPRINT
+        );
+
+        keys.clear();
+        keys.extend([KeyCode::ShiftRight, KeyCode::ControlRight]);
+        toggles.0[SNEAK].is_down = false;
+        toggles.0[SPRINT].is_down = false;
+        assert_eq!(
+            fabric_bridge_input_flags(&keys, &toggles, true),
+            crate::fabric_bridge::VANILLA_INPUT_SHIFT | crate::fabric_bridge::VANILLA_INPUT_SPRINT
+        );
+
+        assert_eq!(fabric_bridge_input_flags(&keys, &toggles, false), 0);
+    }
 
     /// `MinecraftServer.computeNextAutosaveInterval`: three hundred seconds of
     /// ticks at the rate the server runs at, never fewer than a hundred.
