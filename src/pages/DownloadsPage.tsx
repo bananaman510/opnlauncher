@@ -27,7 +27,7 @@ export function DownloadsPage({ progress, active, onCancel }: DownloadsPageProps
         ? Math.round((progress.completedFiles / progress.totalFiles) * 100)
         : 0
     : 0;
-  const complete = progress?.phase === "Installation complete";
+  const complete = progress?.phase === "Installation complete" || progress?.phase === "Minecraft files checked";
   const cancelled = progress?.phase === "Installation cancelled";
   const canCancel = active && progress !== null && !progress.phase.startsWith("Installing ");
 
@@ -40,7 +40,7 @@ export function DownloadsPage({ progress, active, onCancel }: DownloadsPageProps
         <section className="settings-panel download-panel">
           <div className="settings-panel-header">
             <div className="info-card-icon violet">{active ? <LoaderCircle className="spin" size={17} /> : complete ? <CircleCheck size={17} /> : cancelled ? <CircleX size={17} /> : <ArrowDownToLine size={17} />}</div>
-            <div><strong>Minecraft {progress.versionId}</strong><span>{active ? progress.phase : complete ? "Installed successfully" : cancelled ? "Cancelled" : progress.phase}</span></div>
+            <div><strong>Minecraft {progress.versionId}</strong><span>{active ? progress.phase : progress.phase === "Minecraft files checked" ? "Files checked; no repair was needed" : complete ? "Missing files repaired successfully" : cancelled ? "Cancelled" : progress.phase}</span></div>
             {canCancel && <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button>}
           </div>
           <div className="download-progress-track" role="progressbar" aria-label={`Downloading Minecraft ${progress.versionId}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><span style={{ width: `${percent}%` }} /></div>

@@ -31,6 +31,17 @@ export function latestCompatibleModVersion(
   return compatible[0] ?? null;
 }
 
+export function latestCompatibleModUpdate(
+  versions: readonly ModVersion[],
+  installedVersionId: string | null | undefined,
+  gameVersion: string,
+  loader: string,
+): ModVersion | null {
+  if (!installedVersionId) return null;
+  const latest = latestCompatibleModVersion(versions, gameVersion, loader);
+  return latest && latest.id !== installedVersionId ? latest : null;
+}
+
 function normalizedIdentity(value: string): string {
   return value.toLocaleLowerCase().replace(/[^a-z0-9]/g, "");
 }

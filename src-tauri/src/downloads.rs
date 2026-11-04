@@ -244,6 +244,7 @@ pub fn install_version(
         true,
         false,
         None,
+        false,
     )
 }
 
@@ -263,7 +264,74 @@ pub fn install_version_for_instance(
         false,
         false,
         None,
+        false,
     )
+}
+
+/// Restore missing official Minecraft files and loader libraries for an existing
+/// instance. Existing regular files are left in place; newly fetched artifacts
+/// still pass the same upstream checksum, size, path, and atomic-write checks as
+/// a normal version installation.
+pub fn repair_missing_instance_files(
+    selected_version_id: &str,
+    install_root: &Path,
+    download_id: &str,
+    cancelled: Arc<AtomicBool>,
+    sink: ProgressSink,
+) -> Result<()> {
+    if !is_safe_id(selected_version_id) {
+        return Err(LauncherError::InvalidInput("Minecraft version identifier is invalid".to_owned()));
+    }
+    Uuid::parse_str(download_id).map_err(|_| {
+        LauncherError::InvalidInput("download identifier is invalid".to_owned())
+    })?;
+    validate_install_root(install_root)?;
+    let base_version_id = launch::base_version_id(install_root, selected_version_id)?;
+
+    install_version_with_policy(
+        &base_version_id,
+        install_root,
+        download_id,
+        Arc::clone(&cancelled),
+        Arc::clone(&sink),
+        false,
+        false,
+        None,
+        true,
+    )?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(LauncherError::Unsupported("file repair cancelled".to_owned()));
+    }
+
+    // The official installer restores vanilla files. Loader profiles can add
+    // their own Maven artifacts, so restore any missing selected-profile jars too.
+    let resolved = launch::resolve_version_metadata(install_root, selected_version_id)?;
+    let mut loader_files = BTreeMap::new();
+    add_library_downloads(&resolved, &mut loader_files)?;
+    retain_missing_files(install_root, &mut loader_files)?;
+    if !loader_files.is_empty() {
+        let total_bytes = loader_files.values().try_fold(0_u64, |total, file| {
+            let size = file.size.unwrap_or(0);
+            total.checked_add(size).filter(|sum| *sum <= MAX_INSTALL_BYTES)
+        }).ok_or_else(|| LauncherError::Unsupported("loader files exceed the repair size limit".to_owned()))?;
+        let total_files = loader_files.len() as u64;
+        let reporter = Arc::new(ProgressReporter::new(
+            download_id.to_owned(),
+            selected_version_id.to_owned(),
+            total_files,
+            total_bytes,
+            sink,
+        ));
+        reporter.set_phase("Repairing loader files");
+        download_files(
+            &build_client()?,
+            loader_files.into_values().collect(),
+            install_root,
+            &cancelled,
+            reporter,
+        )?;
+    }
+    Ok(())
 }
 
 pub fn install_horizon_version(
@@ -305,6 +373,7 @@ pub fn install_horizon_version_using_source(
         false,
         true,
         source_root,
+        false,
     )
 }
 
@@ -447,6 +516,7 @@ fn install_version_with_policy(
     require_empty_root: bool,
     include_server_artifact: bool,
     source_root: Option<&Path>,
+    only_missing_files: bool,
 ) -> Result<()> {
     if !is_safe_id(version_id) {
         return Err(LauncherError::InvalidInput(
@@ -536,6 +606,9 @@ fn install_version_with_policy(
     if let Some(source_root) = source_root {
         reuse_verified_files(source_root, install_root, files.values(), &cancelled)?;
     }
+    if only_missing_files {
+        retain_missing_files(install_root, &mut files)?;
+    }
     let total_bytes = files.values().try_fold(0_u64, |total, file| {
         let size = match &file.source {
             DownloadSource::Bytes(bytes) => bytes.len() as u64,
@@ -569,6 +642,28 @@ fn install_version_with_policy(
         create_virtual_assets(install_root, assets_id, &virtual_assets)?;
     }
     reporter.set_phase("Installation complete");
+    Ok(())
+}
+
+fn retain_missing_files(root: &Path, files: &mut BTreeMap<PathBuf, DownloadFile>) -> Result<()> {
+    let mut missing = BTreeMap::new();
+    for (relative, file) in std::mem::take(files) {
+        let target = safe_target(root, &relative)?;
+        match fs::symlink_metadata(&target) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.insert(relative, file);
+            }
+            Err(error) => return Err(error.into()),
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err(LauncherError::Unsupported(format!(
+                    "existing Minecraft file {} is not a regular file",
+                    relative.display()
+                )));
+            }
+            Ok(_) => {}
+        }
+    }
+    *files = missing;
     Ok(())
 }
 
@@ -1394,11 +1489,10 @@ fn create_virtual_assets(root: &Path, assets_id: &str, entries: &[(PathBuf, Path
             return Err(LauncherError::Unsupported("legacy asset source is not a regular file".to_owned()));
         }
         match fs::symlink_metadata(&destination) {
-            Ok(_) => {
-                return Err(LauncherError::Unsupported(
-                    "legacy asset destination already exists".to_owned(),
-                ));
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err(LauncherError::Unsupported("legacy asset destination is not a regular file".to_owned()));
             }
+            Ok(_) => continue,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
@@ -1522,6 +1616,35 @@ mod tests {
         ] {
             assert!(parse_version_manifest(bytes).is_err());
         }
+    }
+
+    #[test]
+    fn repair_plan_includes_only_absent_files_and_preserves_existing_files() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/test-download-repair")
+            .join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&root).unwrap();
+        let existing_path = PathBuf::from("libraries/example/present.jar");
+        let missing_path = PathBuf::from("assets/objects/aa/missing");
+        let existing_target = root.join(&existing_path);
+        fs::create_dir_all(existing_target.parent().unwrap()).unwrap();
+        fs::write(&existing_target, b"keep exactly as installed").unwrap();
+
+        let item = |path: PathBuf| DownloadFile {
+            path,
+            source: DownloadSource::Bytes(Arc::new(b"replacement".to_vec())),
+            sha1: Some(sha1_hex(b"replacement")),
+            size: Some(b"replacement".len() as u64),
+        };
+        let mut files = BTreeMap::from([
+            (existing_path.clone(), item(existing_path.clone())),
+            (missing_path.clone(), item(missing_path.clone())),
+        ]);
+
+        retain_missing_files(&root, &mut files).unwrap();
+        assert_eq!(files.keys().cloned().collect::<Vec<_>>(), vec![missing_path]);
+        assert_eq!(fs::read(existing_target).unwrap(), b"keep exactly as installed");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

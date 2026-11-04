@@ -3,6 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import packageJson from "../package.json";
 import { DownloadsPage } from "./pages/DownloadsPage";
+import { PlaytimeCard } from "./components/PlaytimeCard";
 import { HorizonModsPage } from "./pages/HorizonModsPage";
 import { HorizonSettingsPage } from "./pages/HorizonSettingsPage";
 import { InstanceSetupPanel, type InstanceSetupSelection } from "./pages/InstanceSetupPanel";
@@ -19,13 +20,16 @@ import {
   CircleCheck,
   Clock3,
   Cpu,
+  ExternalLink,
   FolderOpen,
   Gamepad2,
   HardDrive,
   House,
+  Info,
   Layers3,
   LayoutGrid,
   List,
+  LogOut,
   LoaderCircle,
   MonitorCog,
   PackageOpen,
@@ -44,6 +48,7 @@ import {
   Zap,
 } from "lucide-react";
 import { formatRelativeTime, javaLabel } from "./format";
+import { filterSortInstances, type InstanceEngineFilter, type InstanceFilter, type InstanceSort } from "./libraryFilters";
 import type {
   Instance,
   HorizonClientInfo,
@@ -53,6 +58,7 @@ import type {
   LaunchLogEvent,
   LaunchStarted,
   MinecraftInstallation,
+  MicrosoftAccount,
   OfflineProfile,
   DownloadProgress,
   RemoteMinecraftVersion,
@@ -60,7 +66,6 @@ import type {
 
 type ThemeMode = "dark" | "light";
 type AccentColor = "lime" | "mint" | "sky" | "violet";
-type InstanceFilter = "all" | "favorites";
 type InstanceView = "grid" | "list";
 
 const navigation = [
@@ -171,6 +176,10 @@ function App() {
   const [installations, setInstallations] = useState<MinecraftInstallation[]>([]);
   const [runtimes, setRuntimes] = useState<JavaRuntime[]>([]);
   const [profiles, setProfiles] = useState<OfflineProfile[]>([]);
+  const [microsoftAccounts, setMicrosoftAccounts] = useState<MicrosoftAccount[]>([]);
+  const [microsoftClientId, setMicrosoftClientId] = useState(() => readStoredValue("microsoft-client-id") ?? "");
+  const [microsoftSignInBusy, setMicrosoftSignInBusy] = useState(false);
+  const [accountError, setAccountError] = useState("");
   const [curseForgeApiKey, setCurseForgeApiKey] = useState("");
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(() => readStoredValue("selected-instance"));
   const [selectedProfileId, setSelectedProfileId] = useState(() => readStoredValue("selected-profile") ?? "");
@@ -178,7 +187,7 @@ function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => readStoredValue("theme") === "light" ? "light" : "dark");
   const [accent, setAccent] = useState<AccentColor>(() => {
     const stored = readStoredValue("accent");
-    return accentColors.some((color) => color.id === stored) ? stored as AccentColor : "violet";
+    return accentColors.some((color) => color.id === stored) ? stored as AccentColor : "lime";
   });
   const [defaultJavaPath, setDefaultJavaPath] = useState(() => readStoredValue("default-java-path") ?? "");
   const [defaultMemoryMb, setDefaultMemoryMb] = useState(() => {
@@ -199,6 +208,10 @@ function App() {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showInstanceSetup, setShowInstanceSetup] = useState(false);
   const [showVersionInstallDialog, setShowVersionInstallDialog] = useState(false);
+  const [showDetectedInstallDialog, setShowDetectedInstallDialog] = useState(false);
+  const [detectedInstallTarget, setDetectedInstallTarget] = useState<{ installation: MinecraftInstallation; versionId: string } | null>(null);
+  const [detectedInstallName, setDetectedInstallName] = useState("");
+  const [scanningInstallations, setScanningInstallations] = useState(false);
   const [showProfileForm, setShowProfileForm] = useState(false);
   const [instanceName, setInstanceName] = useState("");
   const [versionInstanceName, setVersionInstanceName] = useState("");
@@ -209,6 +222,14 @@ function App() {
   const [memoryChoice, setMemoryChoice] = useState(2048);
   const [instanceSearch, setInstanceSearch] = useState("");
   const [instanceFilter, setInstanceFilter] = useState<InstanceFilter>("all");
+  const [instanceEngineFilter, setInstanceEngineFilter] = useState<InstanceEngineFilter>(() => {
+    const stored = readStoredValue("instance-engine-filter");
+    return stored === "minecraft" || stored === "horizon" ? stored : "all";
+  });
+  const [instanceSort, setInstanceSort] = useState<InstanceSort>(() => {
+    const stored = readStoredValue("instance-sort");
+    return stored === "name" || stored === "version" ? stored : "recent";
+  });
   const [instanceView, setInstanceView] = useState<InstanceView>("grid");
   const [isBusy, setIsBusy] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -237,7 +258,10 @@ function App() {
   const selectedHorizonWindow = selectedInstance?.engine === "horizon"
     ? horizonWindowSettings[selectedInstance.id] ?? { width: 1280, height: 720, fullscreen: false }
     : { width: 1280, height: 720, fullscreen: false };
-  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
+  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId)
+    ?? microsoftAccounts.find((account) => account.id === selectedProfileId)
+    ?? null;
+  const selectedProfileIsMicrosoft = selectedProfileId.startsWith("microsoft:");
   const selectedJava = runtimes.find((runtime) => runtime.path === selectedJavaPath)
     ?? (selectedJavaPath === "" ? runtimes[0] ?? null : null);
   const downloadPercent = downloadProgress
@@ -248,16 +272,13 @@ function App() {
         : 0
     : 0;
   const latestLogLines = useMemo(() => logs.slice(-100), [logs]);
-  const visibleInstances = useMemo(() => {
-    const query = instanceSearch.trim().toLocaleLowerCase();
-    return [...instances]
-      .filter((instance) => instanceFilter === "all" || favoriteIds.includes(instance.id))
-      .filter((instance) => !query || `${instance.name} ${instance.versionId ?? ""} ${instance.gameDir}`.toLocaleLowerCase().includes(query))
-      .sort((left, right) => {
-        const favoriteOrder = Number(favoriteIds.includes(right.id)) - Number(favoriteIds.includes(left.id));
-        return favoriteOrder || (right.lastPlayedAt ?? right.createdAt) - (left.lastPlayedAt ?? left.createdAt);
-      });
-  }, [favoriteIds, instanceFilter, instanceSearch, instances]);
+  const visibleInstances = useMemo(() => filterSortInstances(instances, {
+    query: instanceSearch,
+    filter: instanceFilter,
+    engine: instanceEngineFilter,
+    sort: instanceSort,
+    favorites: favoriteIds,
+  }), [favoriteIds, instanceEngineFilter, instanceFilter, instanceSearch, instanceSort, instances]);
   const recentInstances = useMemo(
     () => [...instances].sort((left, right) => (right.lastPlayedAt ?? right.createdAt) - (left.lastPlayedAt ?? left.createdAt)).slice(0, 4),
     [instances],
@@ -321,10 +342,15 @@ function App() {
         if (savedInstances.length > 0) setMemoryChoice(savedInstances[0].memoryMb);
         setFavoriteIds((current) => current.filter((id) => savedInstances.some((instance) => instance.id === id)));
         if (foundRuntimes.length > 0) setSelectedJavaPath(foundRuntimes[0].path);
-        const savedProfiles = await invoke<OfflineProfile[]>("list_offline_profiles");
+        const [savedProfiles, savedAccounts] = await Promise.all([
+          invoke<OfflineProfile[]>("list_offline_profiles"),
+          invoke<MicrosoftAccount[]>("list_microsoft_accounts"),
+        ]);
         if (!cancelled) {
           setProfiles(savedProfiles);
-          setSelectedProfileId((current) => savedProfiles.some((profile) => profile.id === current) ? current : savedProfiles[0]?.id ?? "");
+          setMicrosoftAccounts(savedAccounts);
+          const savedAccountIds = [...savedProfiles, ...savedAccounts].map((account) => account.id);
+          setSelectedProfileId((current) => savedAccountIds.includes(current) ? current : savedProfiles[0]?.id ?? savedAccounts[0]?.id ?? "");
         }
       } catch (reason) {
         if (!cancelled) setError(String(reason));
@@ -392,6 +418,9 @@ function App() {
     writeStoredValue("favorite-instances", JSON.stringify(favoriteIds));
   }, [favoriteIds]);
 
+  useEffect(() => { writeStoredValue("instance-engine-filter", instanceEngineFilter); }, [instanceEngineFilter]);
+  useEffect(() => { writeStoredValue("instance-sort", instanceSort); }, [instanceSort]);
+
   useEffect(() => {
     writeStoredValue("default-java-path", defaultJavaPath);
   }, [defaultJavaPath]);
@@ -442,21 +471,28 @@ function App() {
   }
 
   async function refreshInstallations() {
-    const found = await invoke<MinecraftInstallation[]>("scan_installations");
-    const detected = [...found];
-    const selectedSource = detected.find((installation) => installation.root === horizonMinecraftSourcePath);
-    if (horizonMinecraftSourcePath && selectedSource && !selectedSource.versions.some((version) => version.id === "26.3")) {
-      setHorizonMinecraftSourcePath("");
-    } else if (horizonMinecraftSourcePath && !selectedSource) {
-      try {
-        const configured = await invoke<MinecraftInstallation>("inspect_installation", { path: horizonMinecraftSourcePath });
-        if (configured.versions.some((version) => version.id === "26.3")) detected.push(configured);
-        else setHorizonMinecraftSourcePath("");
-      } catch {
+    setScanningInstallations(true);
+    try {
+      const found = await invoke<MinecraftInstallation[]>("scan_installations");
+      const detected = [...found];
+      const selectedSource = detected.find((installation) => installation.root === horizonMinecraftSourcePath);
+      if (horizonMinecraftSourcePath && selectedSource && !selectedSource.versions.some((version) => version.id === "26.3")) {
         setHorizonMinecraftSourcePath("");
+      } else if (horizonMinecraftSourcePath && !selectedSource) {
+        try {
+          const configured = await invoke<MinecraftInstallation>("inspect_installation", { path: horizonMinecraftSourcePath });
+          if (configured.versions.some((version) => version.id === "26.3")) detected.push(configured);
+          else setHorizonMinecraftSourcePath("");
+        } catch {
+          setHorizonMinecraftSourcePath("");
+        }
       }
+      setInstallations(detected.sort((a, b) => a.root.localeCompare(b.root)));
+    } catch (reason) {
+      setError(`Could not scan Minecraft installations: ${String(reason)}`);
+    } finally {
+      setScanningInstallations(false);
     }
-    setInstallations(detected.sort((a, b) => a.root.localeCompare(b.root)));
   }
 
   async function refreshHorizonDiscovery() {
@@ -654,22 +690,31 @@ function App() {
     }
   }
 
-  async function addDetectedInstallation(installation: MinecraftInstallation, versionId: string) {
+  function requestAddDetectedInstallation(installation: MinecraftInstallation, versionId: string) {
     const suggested = `${versionId} · ${installation.root.split(/[\/]/).filter(Boolean).at(-1) ?? "Minecraft"}`;
-    const name = window.prompt("Name this instance", suggested);
-    if (!name?.trim()) return;
+    setDetectedInstallTarget({ installation, versionId });
+    setDetectedInstallName(suggested.slice(0, 48));
+    setShowDetectedInstallDialog(true);
+  }
+
+  async function addDetectedInstallation() {
+    if (!detectedInstallTarget || !detectedInstallName.trim()) return;
+    const { installation, versionId } = detectedInstallTarget;
     setError("");
     setIsBusy(true);
     setBusyMessage("Adding local installation");
     try {
       const created = await invoke<Instance>("register_installation", {
-        name,
+        name: detectedInstallName.trim(),
         root: installation.root,
         versionId,
       });
       setInstances((current) => [created, ...current]);
       setSelectedInstanceId(created.id);
+      setShowDetectedInstallDialog(false);
       setShowAddDialog(false);
+      setDetectedInstallTarget(null);
+      setActivePage("instances");
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -694,7 +739,7 @@ function App() {
 
   async function addInspectedInstallation() {
     if (!inspectedInstall || !versionChoice) return;
-    await addDetectedInstallation(inspectedInstall, versionChoice);
+    requestAddDetectedInstallation(inspectedInstall, versionChoice);
   }
 
   async function createBlankInstance(event: React.FormEvent<HTMLFormElement>) {
@@ -733,6 +778,33 @@ function App() {
       setShowProfileForm(false);
     } catch (reason) {
       setError(String(reason));
+    }
+  }
+
+  async function signInMicrosoft() {
+    if (!desktop || microsoftSignInBusy || !microsoftClientId.trim()) return;
+    setMicrosoftSignInBusy(true);
+    setAccountError("");
+    writeStoredValue("microsoft-client-id", microsoftClientId.trim());
+    try {
+      const account = await invoke<MicrosoftAccount>("add_microsoft_account", { clientId: microsoftClientId.trim() });
+      setMicrosoftAccounts((current) => [...current.filter((saved) => saved.id !== account.id), account]);
+      setSelectedProfileId(account.id);
+    } catch (reason) {
+      setAccountError(String(reason));
+    } finally {
+      setMicrosoftSignInBusy(false);
+    }
+  }
+
+  async function signOutMicrosoft(account: MicrosoftAccount) {
+    setAccountError("");
+    try {
+      await invoke("remove_microsoft_account", { accountId: account.id });
+      setMicrosoftAccounts((current) => current.filter((saved) => saved.id !== account.id));
+      if (selectedProfileId === account.id) setSelectedProfileId(profiles[0]?.id ?? "");
+    } catch (reason) {
+      setAccountError(String(reason));
     }
   }
 
@@ -790,6 +862,16 @@ function App() {
     }
   }
 
+  async function openSelectedInstanceFolder() {
+    if (!selectedInstance) return;
+    setError("");
+    try {
+      await invoke("open_instance_folder", { instanceId: selectedInstance.id });
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
   function toggleFavorite(instanceId: string) {
     setFavoriteIds((current) => current.includes(instanceId)
       ? current.filter((id) => id !== instanceId)
@@ -797,7 +879,25 @@ function App() {
   }
 
   async function launchSelected() {
-    if (!selectedInstance || !selectedProfile) return;
+    if (!selectedInstance || !selectedProfile || isInstallingVersion) return;
+    const repairDownloadId = selectedInstance.engine === "minecraft" || selectedInstance.horizonFabricEnabled
+      ? crypto.randomUUID()
+      : null;
+    if (repairDownloadId) {
+      activeDownloadIdRef.current = repairDownloadId;
+      setActiveDownloadId(repairDownloadId);
+      setDownloadProgress({
+        downloadId: repairDownloadId,
+        versionId: selectedInstance.versionId ?? "Minecraft",
+        phase: "Checking Minecraft files",
+        currentFile: "Checking this instance before launch",
+        completedFiles: 0,
+        totalFiles: 0,
+        downloadedBytes: 0,
+        totalBytes: 0,
+      });
+      setIsInstallingVersion(true);
+    }
     setError("");
     setLogs([]);
     setLaunchState("running");
@@ -810,16 +910,32 @@ function App() {
           width: selectedHorizonWindow.width,
           height: selectedHorizonWindow.height,
           fullscreen: selectedHorizonWindow.fullscreen,
+          downloadId: repairDownloadId ?? crypto.randomUUID(),
         })
         : await invoke<LaunchStarted>("launch_instance", {
           instanceId: selectedInstance.id,
           profileId: selectedProfile.id,
+          downloadId: repairDownloadId ?? crypto.randomUUID(),
         });
       setLogPath(started.logPath);
       setLogs((current) => [`Process ${started.pid} started. Local log: ${started.logPath}`, ...current]);
     } catch (reason) {
       setLaunchState("idle");
-      setError(String(reason));
+      const message = String(reason);
+      setError(message);
+      if (repairDownloadId) {
+        setDownloadProgress((current) => current ? {
+          ...current,
+          phase: message.toLowerCase().includes("cancel") ? "Installation cancelled" : "Installation failed",
+          currentFile: "",
+        } : current);
+      }
+    } finally {
+      if (repairDownloadId) {
+        activeDownloadIdRef.current = null;
+        setActiveDownloadId(null);
+        setIsInstallingVersion(false);
+      }
     }
   }
 
@@ -877,21 +993,29 @@ function App() {
 
   const activeNavigation = navigation.find((item) => item.id === activePage) ?? navigation[0];
   const horizonSelected = selectedInstance?.engine === "horizon";
+  const horizonJavaFabricSelected = horizonSelected && Boolean(selectedInstance?.horizonFabricEnabled);
   const canLaunch = desktop && Boolean(selectedInstance && selectedProfile
+    && (!horizonSelected || !selectedProfileIsMicrosoft)
     && (horizonSelected
-      ? horizonClientInfo && horizonResourcesReady
+      ? horizonJavaFabricSelected
+        ? selectedInstance.horizonFabricVersionId && selectedInstance.horizonFabricJavaPath
+        : horizonClientInfo && horizonResourcesReady
       : selectedInstance.versionId && selectedJava))
-    && launchState !== "running" && !isBusy;
+    && launchState !== "running" && !isBusy && !isInstallingVersion;
   const launchHint = !desktop ? "Open the desktop app to launch Minecraft."
     : !selectedInstance ? "Choose or install an instance to get started."
       : !selectedProfile ? "Create a local developer profile for testing."
-        : horizonSelected && !horizonClientInfo ? "The bundled Horizon engine is unavailable in this build."
-          : horizonSelected && !horizonResourcesReady ? "Download the official 26.3 files and prepare Horizon resources in Horizon settings."
-            : !selectedInstance.versionId ? "Install a Minecraft version for this instance first."
+        : horizonSelected && selectedProfileIsMicrosoft ? "Horizon currently uses local profiles. Select a local account, or choose a Minecraft Java instance for Microsoft sign-in."
+        : horizonJavaFabricSelected && !selectedInstance.horizonFabricVersionId ? "Install the optional Java + Fabric runtime in Horizon settings first."
+          : horizonJavaFabricSelected && !selectedInstance.horizonFabricJavaPath ? "Choose Java 25+ for this profile in Horizon settings."
+        : horizonSelected && !horizonJavaFabricSelected && !horizonClientInfo ? "The bundled Horizon engine is unavailable in this build."
+          : horizonSelected && !horizonJavaFabricSelected && !horizonResourcesReady ? "Download the official 26.3 files and prepare Horizon resources in Horizon settings."
+            : !horizonSelected && !selectedInstance.versionId ? "Install a Minecraft version for this instance first."
               : !horizonSelected && !selectedJava ? "Select a Java runtime before launching."
                 : launchState === "running" ? "The selected game is running."
                   : isBusy ? "The launcher is working."
-                    : horizonSelected ? "Ready to launch Horizon offline with telemetry disabled."
+                    : horizonJavaFabricSelected ? "Ready to launch the isolated Java + Fabric copy with your local profile."
+                      : horizonSelected ? "Ready to launch Horizon offline with telemetry disabled."
                       : "Ready to launch.";
   const versionedInstanceCount = instances.filter((instance) => instance.versionId).length;
 
@@ -905,7 +1029,7 @@ function App() {
 
         <button className="sidebar-profile" type="button" onClick={() => setActivePage("accounts")} title="Manage local developer profiles">
           <span className="profile-avatar">{selectedProfile?.name.slice(0, 1).toUpperCase() ?? <UsersRound size={16} />}</span>
-          <span className="sidebar-profile-copy"><strong>{selectedProfile?.name ?? "Set up a profile"}</strong><small>UNVERIFIED · LOCAL</small></span>
+          <span className="sidebar-profile-copy"><strong>{selectedProfile?.name ?? "Set up a profile"}</strong><small>{selectedProfileIsMicrosoft ? "MICROSOFT · VERIFIED" : "UNVERIFIED · LOCAL"}</small></span>
           <ChevronDown size={15} />
         </button>
 
@@ -961,10 +1085,18 @@ function App() {
               <kbd>Ctrl K</kbd>
             </label>
             <button className="topbar-new-button" type="button" onClick={() => setShowAddDialog(true)}><Plus size={16} /><span>New instance</span></button>
-            <button className="topbar-account" type="button" onClick={() => setActivePage("accounts")} aria-label="Open accounts">
-              <span className="profile-avatar">{selectedProfile?.name.slice(0, 1).toUpperCase() ?? <UsersRound size={15} />}</span>
-              <ChevronDown size={14} />
-            </button>
+            <div className="topbar-profile-switcher">
+              <label className="topbar-account topbar-account-select">
+                <span className={`profile-avatar ${selectedProfileIsMicrosoft ? "microsoft-avatar" : ""}`}>{selectedProfile?.name.slice(0, 1).toUpperCase() ?? <UsersRound size={15} />}</span>
+                <select aria-label="Switch active account" value={selectedProfileId} onChange={(event) => setSelectedProfileId(event.target.value)}>
+                  {!selectedProfileId && <option value="">Set up a profile</option>}
+                  {microsoftAccounts.length > 0 && <optgroup label="Microsoft · verified">{microsoftAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</optgroup>}
+                  {profiles.length > 0 && <optgroup label="Local · unverified">{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</optgroup>}
+                </select>
+                <ChevronDown size={14} />
+              </label>
+              <button className="topbar-account-manage" type="button" onClick={() => setActivePage("accounts")} aria-label="Manage accounts" title="Manage accounts"><UsersRound size={16} /></button>
+            </div>
           </div>
         </header>
 
@@ -986,11 +1118,11 @@ function App() {
                     <div className="hero-topline"><span className="hero-kicker"><Zap size={14} /> QUICK PLAY</span><span className="hero-local-tag"><span /> LOCAL INSTANCE</span></div>
                     {selectedInstance ? (
                       <>
-                        <div className="hero-version"><Layers3 size={15} /> {selectedInstance.engine === "horizon" ? `Minecraft ${selectedInstance.versionId} · Horizon (Rust)` : `Minecraft Java · ${selectedInstance.versionId ?? "No version installed"}`}</div>
+                        <div className="hero-version"><Layers3 size={15} /> {selectedInstance.engine === "horizon" ? selectedInstance.horizonFabricEnabled ? "Minecraft 26.3 · Fabric Java runtime" : `Minecraft ${selectedInstance.versionId} · Horizon (Rust)` : `Minecraft Java · ${selectedInstance.versionId ?? "No version installed"}`}</div>
                         <h2>{selectedInstance.name}</h2>
-                        <p className="hero-description">{selectedInstance.engine === "horizon" ? "A separate Rust-powered profile with its own local worlds and content mods." : "Your selected world is ready whenever you are."}</p>
+                        <p className="hero-description">{selectedInstance.engine === "horizon" ? selectedInstance.horizonFabricEnabled ? "Optional mode runs the Java Minecraft client with Fabric in a separate folder. Switch back to the Rust engine in Horizon settings." : "A separate Rust-powered profile with its own local worlds and content mods." : "Your selected world is ready whenever you are."}</p>
                         <div className="hero-facts">
-                          {selectedInstance.engine === "horizon" ? <><span><Sparkles size={15} /> Rust engine</span><span><ShieldCheck size={15} /> Local profile · offline</span></> : <><span><Cpu size={15} /> {selectedJava ? javaLabel(selectedJava.majorVersion) : "Java not selected"}</span><span><HardDrive size={15} /> {formatMemory(memoryChoice)}</span></>}
+                          {selectedInstance.engine === "horizon" ? <><span><Sparkles size={15} /> {selectedInstance.horizonFabricEnabled ? "Java + Fabric backend" : "Rust engine"}</span><span><ShieldCheck size={15} /> Local profile · offline</span></> : <><span><Cpu size={15} /> {selectedJava ? javaLabel(selectedJava.majorVersion) : "Java not selected"}</span><span><HardDrive size={15} /> {formatMemory(memoryChoice)}</span></>}
                           <span><Clock3 size={15} /> {formatRelativeTime(selectedInstance.lastPlayedAt)}</span>
                         </div>
                         <div className="hero-actions">
@@ -1018,11 +1150,11 @@ function App() {
                     <div className="card-kicker"><UsersRound size={15} /> TEST PROFILE</div>
                     <button className="account-summary-main" type="button" onClick={() => setActivePage("accounts")}>
                       <span className="account-large-avatar">{selectedProfile?.name.slice(0, 1).toUpperCase() ?? <UsersRound size={20} />}</span>
-                      <span><strong>{selectedProfile?.name ?? "Create a local profile"}</strong><small>{selectedProfile ? "Unverified · local only" : "Needed for local test launches"}</small></span>
+                      <span><strong>{selectedProfile?.name ?? "Create an account"}</strong><small>{selectedProfile ? selectedProfileIsMicrosoft ? "Microsoft · Minecraft ownership verified" : "Unverified · local only" : "Needed to launch an instance"}</small></span>
                       <ChevronDown size={16} />
                     </button>
-                    <div className="account-local-note"><ShieldCheck size={15} /><span>No password or Microsoft sign-in. Profile data stays on this device.</span></div>
-                    <button className="text-link" type="button" onClick={() => setActivePage("accounts")}>{profiles.length ? "Manage profiles" : "Create test profile"}<ArrowRight size={14} /></button>
+                    <div className="account-local-note"><ShieldCheck size={15} /><span>{selectedProfileIsMicrosoft ? "Tokens stay in the operating system credential store. Online access uses Microsoft authentication." : "No password is collected. This local profile does not authenticate to Microsoft or online servers."}</span></div>
+                    <button className="text-link" type="button" onClick={() => setActivePage("accounts")}>Manage accounts<ArrowRight size={14} /></button>
                   </section>
                   <section className="device-card">
                     <div className="device-card-heading"><span className="device-card-icon"><MonitorCog size={17} /></span><span><strong>This device</strong><small>Local setup overview</small></span></div>
@@ -1033,6 +1165,8 @@ function App() {
                   </section>
                 </aside>
               </div>
+
+              <PlaytimeCard desktop={desktop} />
 
               <section className="section-block">
                 <div className="section-heading"><div><p className="eyebrow">PICK UP WHERE YOU LEFT OFF</p><h2>Recent instances</h2></div><button className="text-link" type="button" onClick={() => setActivePage("instances")}>View library <ArrowRight size={15} /></button></div>
@@ -1079,15 +1213,20 @@ function App() {
               </div>
               <div className="instance-toolbar">
                 <label className="search-box"><Search size={17} /><input aria-label="Search instances" placeholder="Search by name, version, or folder" value={instanceSearch} onChange={(event) => setInstanceSearch(event.target.value)} /><kbd>/</kbd></label>
+                <label className="instance-sort-control"><span>Sort</span><select aria-label="Sort instances" value={instanceSort} onChange={(event) => setInstanceSort(event.target.value as InstanceSort)}><option value="recent">Recently played</option><option value="name">Name</option><option value="version">Minecraft version</option></select><ChevronDown size={14} /></label>
                 <div className="view-switch" role="group" aria-label="Instance layout">
                   <button type="button" className={instanceView === "grid" ? "selected" : ""} onClick={() => setInstanceView("grid")} aria-label="Grid view"><LayoutGrid size={17} /></button>
                   <button type="button" className={instanceView === "list" ? "selected" : ""} onClick={() => setInstanceView("list")} aria-label="List view"><List size={18} /></button>
                 </div>
               </div>
+              <div className="instance-filter-row" role="group" aria-label="Filter instances by game engine">
+                <span>Show</span>
+                {([{ id: "all", label: "Everything" }, { id: "minecraft", label: "Minecraft Java" }, { id: "horizon", label: "Horizon" }] as const).map((filter) => <button key={filter.id} type="button" className={instanceEngineFilter === filter.id ? "selected" : ""} onClick={() => setInstanceEngineFilter(filter.id)} aria-pressed={instanceEngineFilter === filter.id}>{filter.label}<small>{filter.id === "all" ? instances.length : instances.filter((instance) => instance.engine === filter.id).length}</small></button>)}
+              </div>
               {instances.length === 0 ? (
                 <div className="empty-library-card empty-library-large"><div className="empty-icon"><Gamepad2 size={23} /></div><div><strong>Nothing in your library yet</strong><span>Install a version from Mojang or register a game folder already on this device.</span></div><div className="empty-actions"><button className="play-button" type="button" onClick={() => setActivePage("versions")}><ArrowDownToLine size={16} /> Browse versions</button><button className="secondary-button" type="button" onClick={() => setShowAddDialog(true)}>Add local files</button></div></div>
               ) : visibleInstances.length === 0 ? (
-                <div className="empty-library-card empty-library-large"><div className="empty-icon"><Search size={22} /></div><div><strong>{instanceFilter === "favorites" && favoriteIds.length === 0 ? "No favorites yet" : "No matches found"}</strong><span>{instanceFilter === "favorites" && favoriteIds.length === 0 ? "Mark an instance with a star and it will appear here." : "Try another search or clear the current filter."}</span></div><button className="secondary-button" type="button" onClick={() => { setInstanceSearch(""); setInstanceFilter("all"); }}>Clear filters</button></div>
+                <div className="empty-library-card empty-library-large"><div className="empty-icon"><Search size={22} /></div><div><strong>{instanceFilter === "favorites" && favoriteIds.length === 0 ? "No favorites yet" : "No matches found"}</strong><span>{instanceFilter === "favorites" && favoriteIds.length === 0 ? "Mark an instance with a star and it will appear here." : "Try another search or clear the current filter."}</span></div><button className="secondary-button" type="button" onClick={() => { setInstanceSearch(""); setInstanceFilter("all"); setInstanceEngineFilter("all"); }}>Clear filters</button></div>
               ) : (
                 <div className={`instances-workspace ${instanceView === "list" ? "list-view" : "grid-view"}`}>
                   <div className={`instance-collection ${instanceView === "list" ? "as-list" : "as-grid"}`}>
@@ -1106,12 +1245,12 @@ function App() {
                   {selectedInstance && (
                     <section className="instance-settings-card">
                       <div className="details-card-topline"><span>INSTANCE SETTINGS</span><button className={`favorite-toggle ${favoriteIds.includes(selectedInstance.id) ? "is-favorite" : ""}`} type="button" onClick={() => toggleFavorite(selectedInstance.id)} aria-label={favoriteIds.includes(selectedInstance.id) ? "Remove from favorites" : "Add to favorites"} aria-pressed={favoriteIds.includes(selectedInstance.id)}><Star size={17} fill={favoriteIds.includes(selectedInstance.id) ? "currentColor" : "none"} /></button></div>
-                      <div className="details-instance-title"><span className="details-game-icon"><Gamepad2 size={22} /></span><span><strong>{selectedInstance.name}</strong><small>{selectedInstance.engine === "horizon" ? `Minecraft ${selectedInstance.versionId ?? "26.3"} · Horizon Rust engine` : selectedInstance.versionId ?? "No game version selected"}</small></span></div>
+                      <div className="details-instance-title"><span className="details-game-icon"><Gamepad2 size={22} /></span><span><strong>{selectedInstance.name}</strong><small>{selectedInstance.engine === "horizon" ? selectedInstance.horizonFabricEnabled ? "Minecraft 26.3 · Java + Fabric compatibility runtime" : `Minecraft ${selectedInstance.versionId ?? "26.3"} · Horizon Rust engine` : selectedInstance.versionId ?? "No game version selected"}</small></span></div>
                       <div className="details-divider" />
                       {selectedInstance.engine === "horizon" ? (
                         <>
-                          <div className="instance-game-summary"><span><strong>Horizon game setup</strong><small>Separate native Rust engine for Minecraft 26.3</small></span><button className="secondary-button" type="button" onClick={() => setActivePage("horizon")}><Wrench size={14} /> Settings</button></div>
-                          <div className="horizon-instance-actions"><button className="secondary-button" type="button" onClick={() => setActivePage("mods")}><PackageOpen size={14} /> Manage Horizon mods</button><button className="settings-quiet-button" type="button" onClick={() => setActivePage("horizon")}><Cpu size={14} /> Client &amp; resources</button></div>
+                          <div className="instance-game-summary"><span><strong>{selectedInstance.horizonFabricEnabled ? "Fabric compatibility mode" : "Horizon game setup"}</strong><small>{selectedInstance.horizonFabricEnabled ? "Compatible Java Fabric mods run in the isolated Minecraft client." : "Separate native Rust engine for Minecraft 26.3"}</small></span><button className="secondary-button" type="button" onClick={() => setActivePage("horizon")}><Wrench size={14} /> Settings</button></div>
+                          <div className="horizon-instance-actions"><button className="secondary-button" type="button" onClick={() => setActivePage("mods")}><PackageOpen size={14} /> {selectedInstance.horizonFabricEnabled ? "Manage Fabric mods" : "Manage Horizon mods"}</button><button className="settings-quiet-button" type="button" onClick={() => setActivePage("horizon")}><Cpu size={14} /> Client &amp; resources</button></div>
                           <div className="settings-callout"><ShieldCheck size={15} /><span>Uses the selected unverified local profile. Microsoft sign-in is off and Horizon telemetry is disabled.</span></div>
                         </>
                       ) : (
@@ -1126,7 +1265,7 @@ function App() {
                           <button className="save-button" type="button" onClick={() => void saveInstanceSettings()} disabled={isSavingSettings}>{isSavingSettings ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}{isSavingSettings ? "Saving settings…" : "Save settings"}</button>
                         </>
                       )}
-                      <div className="detail-path"><HardDrive size={15} /><span title={selectedInstance.gameDir}>{selectedInstance.gameDir}</span></div>
+                      <div className="instance-folder-tools"><div className="detail-path"><HardDrive size={15} /><span title={selectedInstance.gameDir}>{selectedInstance.gameDir}</span></div><button className="secondary-button" type="button" onClick={() => void openSelectedInstanceFolder()}><FolderOpen size={15} /> Open folder</button></div>
                       <button className="detail-launch-button" type="button" disabled={!canLaunch} onClick={() => void launchSelected()}><Play size={15} fill="currentColor" /> Launch this instance</button>
                       <div className="instance-action-links"><button type="button" onClick={() => { setRenameValue(selectedInstance.name); setShowRenameDialog(true); }}>Rename</button><button type="button" className="danger-link" onClick={() => setShowForgetDialog(true)}>Remove from library</button></div>
                       <p className="preserve-note">Removing an instance keeps its game files, saves, and worlds on disk.</p>
@@ -1137,14 +1276,29 @@ function App() {
               <form className="quick-create" onSubmit={(event) => void createBlankInstance(event)}><div><strong>Need a clean profile?</strong><span>Create a Java instance or Horizon Rust profile.</span></div><input value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder="New profile name" aria-label="New profile name" maxLength={48} /><select className="field-control quick-create-engine" aria-label="New profile engine" value={newInstanceEngine} onChange={(event) => setNewInstanceEngine(event.target.value as "minecraft" | "horizon")}><option value="minecraft">Minecraft Java</option><option value="horizon">Horizon Rust</option></select><button type="submit" className="secondary-button" disabled={isBusy || !instanceName.trim()}><Plus size={15} /> Create</button></form>
             </>
           ) : activePage === "versions" ? (
-            <VersionsPage versions={officialVersions} loading={versionsLoading} error={versionsError} onRefresh={() => void loadOfficialVersions()} onInstall={chooseRemoteVersion} onCreateHorizon={() => { setNewInstanceEngine("horizon"); setInstanceName("Horizon 26.3"); setShowAddDialog(true); }} installing={isInstallingVersion} desktop={desktop} />
+            <VersionsPage versions={officialVersions} loading={versionsLoading} error={versionsError} onRefresh={() => void loadOfficialVersions()} onInstall={chooseRemoteVersion} onCreateHorizon={() => { setNewInstanceEngine("horizon"); setInstanceName("Horizon 26.3"); setShowAddDialog(true); }} installations={installations} instances={instances} scanningInstallations={scanningInstallations} onScanInstallations={() => void refreshInstallations()} onAddDetected={requestAddDetectedInstallation} installing={isInstallingVersion} desktop={desktop} />
           ) : activePage === "downloads" ? (
             <DownloadsPage progress={downloadProgress} active={isInstallingVersion} onCancel={() => void cancelDownload()} />
           ) : activePage === "accounts" ? (
-            <AccountsPage profiles={profiles} selectedProfileId={selectedProfileId} onSelect={(profileId) => setSelectedProfileId(profileId)} onCreate={() => setShowProfileForm(true)} />
+            <AccountsPage
+              profiles={profiles}
+              microsoftAccounts={microsoftAccounts}
+              selectedProfileId={selectedProfileId}
+              clientId={microsoftClientId}
+              signingIn={microsoftSignInBusy}
+              error={accountError}
+              desktop={desktop}
+              onSelect={(profileId) => setSelectedProfileId(profileId)}
+              onCreate={() => setShowProfileForm(true)}
+              onClientIdChange={setMicrosoftClientId}
+              onSignIn={() => void signInMicrosoft()}
+              onSignOut={(account) => void signOutMicrosoft(account)}
+            />
           ) : activePage === "mods" ? (
             selectedInstance?.engine === "horizon"
-              ? <HorizonModsPage desktop={desktop} instances={instances} selectedInstanceId={selectedInstanceId} onSelectInstance={setSelectedInstanceId} onOpenInstances={() => setActivePage("instances")} />
+              ? selectedInstance.horizonFabricEnabled
+                ? <ModsPage desktop={desktop} instances={instances.filter((instance) => instance.engine === "horizon")} selectedInstanceId={selectedInstanceId} onSelectInstance={setSelectedInstanceId} onOpenInstances={() => setActivePage("horizon")} curseForgeKey={curseForgeApiKey} onCurseForgeKeyChange={setCurseForgeApiKey} horizonFabricMode hideInstancePicker />
+                : <HorizonModsPage desktop={desktop} instances={instances} selectedInstanceId={selectedInstanceId} onSelectInstance={setSelectedInstanceId} onOpenInstances={() => setActivePage("instances")} onOpenHorizonSettings={() => setActivePage("horizon")} curseForgeKey={curseForgeApiKey} onCurseForgeKeyChange={setCurseForgeApiKey} />
               : <ModsPage desktop={desktop} instances={instances} selectedInstanceId={selectedInstanceId} onSelectInstance={setSelectedInstanceId} curseForgeKey={curseForgeApiKey} onCurseForgeKeyChange={setCurseForgeApiKey} onOpenInstances={() => setActivePage("instances")} />
           ) : activePage === "horizon" ? (
             <HorizonSettingsPage
@@ -1171,6 +1325,8 @@ function App() {
               height={selectedHorizonWindow.height}
               fullscreen={selectedHorizonWindow.fullscreen}
               onWindowChange={updateHorizonWindowSettings}
+              onInstanceUpdated={(updated) => setInstances((current) => current.map((instance) => instance.id === updated.id ? updated : instance))}
+              onOpenMods={() => setActivePage("mods")}
               desktop={desktop}
             />
           ) : activePage === "settings" ? (
@@ -1223,9 +1379,22 @@ function App() {
             <form className="new-instance-config-form" onSubmit={(event) => void createBlankInstance(event)}><label className="field-label" htmlFor="new-config-engine">Game engine</label><select id="new-config-engine" className="field-control" value={newInstanceEngine} onChange={(event) => setNewInstanceEngine(event.target.value as "minecraft" | "horizon")}><option value="minecraft">Minecraft Java · standard game</option><option value="horizon">Horizon Rust · Minecraft 26.3</option></select><label className="field-label" htmlFor="new-config-instance-name">Profile name</label><div><input id="new-config-instance-name" className="field-control" value={instanceName} onChange={(event) => setInstanceName(event.target.value)} placeholder={newInstanceEngine === "horizon" ? "For example, Horizon 26.3" : "For example, Fabric Survival"} maxLength={48} /><button className="play-button" type="submit" disabled={isBusy || !instanceName.trim()}><Wrench size={15} /> {newInstanceEngine === "horizon" ? "Create Horizon profile" : "Create & configure"}</button></div><small>{newInstanceEngine === "horizon" ? "Horizon uses its own game runtime, settings, content mods, and worlds." : "Choose a Minecraft version and Vanilla, Fabric, or Forge after creating the instance."}</small></form>
             <button className="version-download-callout" type="button" onClick={() => { setShowAddDialog(false); setActivePage("versions"); }} disabled={!desktop}><span className="version-note-icon"><ArrowDownToLine size={17} /></span><span><strong>Install an official version</strong><small>Choose a release, snapshot, or historical version.</small></span><ArrowRight size={17} /></button>
             <div className="modal-section-heading"><span>EXISTING INSTALLATIONS</span><button className="text-link" type="button" onClick={() => void refreshInstallations()}><FolderOpen size={14} /> Rescan</button></div>
-            {installations.length > 0 ? <div className="detected-list">{installations.map((installation) => <div className="detected-install" key={installation.root}><div className="detected-root"><HardDrive size={16} /><span title={installation.root}>{installation.root}</span></div><div className="detected-version-list">{installation.versions.slice(0, 6).map((version) => <button className="version-option" key={version.id} type="button" onClick={() => void addDetectedInstallation(installation, version.id)}><span><strong>{version.id}</strong><small>{version.kind}</small></span><Plus size={16} /></button>)}</div></div>)}</div> : <div className="no-detected"><FolderOpen size={19} /><span>No standard installation found. You can still download a version above or inspect a folder below.</span></div>}
+            {installations.length > 0 ? <div className="detected-list">{installations.map((installation) => <div className="detected-install" key={installation.root}><div className="detected-root"><HardDrive size={16} /><span title={installation.root}>{installation.root}</span></div><div className="detected-version-list">{installation.versions.slice(0, 6).map((version) => <button className="version-option" key={version.id} type="button" onClick={() => requestAddDetectedInstallation(installation, version.id)}><span><strong>{version.id}</strong><small>{version.kind}</small></span><Plus size={16} /></button>)}</div></div>)}</div> : <div className="no-detected"><FolderOpen size={19} /><span>No standard installation found. You can still download a version above or inspect a folder below.</span></div>}
             <label className="field-label" htmlFor="custom-install-path">Inspect another game folder</label><div className="custom-path-row"><input id="custom-install-path" className="field-control" value={installPath} onChange={(event) => setInstallPath(event.target.value)} placeholder="Path to .minecraft" /><button className="secondary-button" type="button" onClick={() => void inspectCustomInstallation()} disabled={!installPath.trim() || isBusy}>Inspect</button></div>
             {inspectedInstall && <div className="inspected-version"><label className="field-label" htmlFor="version-choice">Choose installed version</label><select id="version-choice" className="field-control" value={versionChoice} onChange={(event) => setVersionChoice(event.target.value)}>{inspectedInstall.versions.map((version) => <option value={version.id} key={version.id}>{version.id} · {version.kind}</option>)}</select><button className="play-button" type="button" onClick={() => void addInspectedInstallation()}><Plus size={16} /> Add selected version</button></div>}
+          </section>
+        </div>
+      )}
+
+      {showDetectedInstallDialog && detectedInstallTarget && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !isBusy) setShowDetectedInstallDialog(false); }}>
+          <section className="modal-card small-modal" role="dialog" aria-modal="true" aria-labelledby="detected-install-title">
+            <div className="modal-header"><div><p className="eyebrow"><HardDrive size={14} /> FOUND ON THIS DEVICE</p><h2 id="detected-install-title">Add Minecraft {detectedInstallTarget.versionId}</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setShowDetectedInstallDialog(false)} disabled={isBusy}><X size={18} /></button></div>
+            <p className="modal-copy">This adds a launcher entry that points to the existing game files. OpnLauncher leaves the installation and its worlds in place.</p>
+            <label className="field-label" htmlFor="detected-install-name">Instance name</label>
+            <input id="detected-install-name" className="field-control" value={detectedInstallName} maxLength={48} onChange={(event) => setDetectedInstallName(event.target.value)} autoFocus />
+            <p className="detected-install-path" title={detectedInstallTarget.installation.root}><HardDrive size={14} />{detectedInstallTarget.installation.root}</p>
+            <div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setShowDetectedInstallDialog(false)} disabled={isBusy}>Cancel</button><button className="play-button" type="button" onClick={() => void addDetectedInstallation()} disabled={!detectedInstallName.trim() || isBusy}>{isBusy ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />}{isBusy ? "Adding…" : "Add to library"}</button></div>
           </section>
         </div>
       )}
@@ -1293,48 +1462,104 @@ function App() {
 
 function AccountsPage({
   profiles,
+  microsoftAccounts,
   selectedProfileId,
+  clientId,
+  signingIn,
+  error,
+  desktop,
   onSelect,
   onCreate,
+  onClientIdChange,
+  onSignIn,
+  onSignOut,
 }: {
   profiles: OfflineProfile[];
+  microsoftAccounts: MicrosoftAccount[];
   selectedProfileId: string;
+  clientId: string;
+  signingIn: boolean;
+  error: string;
+  desktop: boolean;
   onSelect: (profileId: string) => void;
   onCreate: () => void;
+  onClientIdChange: (clientId: string) => void;
+  onSignIn: () => void;
+  onSignOut: (account: MicrosoftAccount) => void;
 }) {
-  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) ?? null;
+  const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId)
+    ?? microsoftAccounts.find((account) => account.id === selectedProfileId)
+    ?? null;
 
   return (
     <>
       <section className="page-heading page-heading-row">
-        <div><p className="eyebrow"><UsersRound size={14} /> LOCAL TESTING</p><h1>Accounts</h1><p className="page-subtitle">Keep a separate, unverified profile ready for launcher and game testing.</p></div>
-        <button className="play-button" type="button" onClick={onCreate}><Plus size={16} /> Create profile</button>
+        <div><p className="eyebrow"><UsersRound size={14} /> ACCOUNT CENTER</p><h1>Accounts</h1><p className="page-subtitle">Choose a verified Microsoft account for Java, or keep local profiles for development.</p></div>
+        <button className="secondary-button" type="button" onClick={onCreate}><Plus size={16} /> Add local profile</button>
       </section>
 
       <div className="account-content-grid">
         <section className="account-manager-card">
-          <div className="section-heading account-list-heading"><div><p className="eyebrow">SAVED ON THIS DEVICE</p><h2>Developer profiles</h2></div><span className="count-pill">{profiles.length}</span></div>
-          <div className="profile-warning account-warning"><ShieldCheck size={18} /><span>These test profiles are always marked unverified. They do not sign in to Microsoft or verify Minecraft ownership.</span></div>
-          {profiles.length > 0 ? <div className="account-profile-list">{profiles.map((profile) => (
-            <article className={`account-profile-card ${selectedProfileId === profile.id ? "selected" : ""}`} key={profile.id}>
-              <button className="account-profile-select" type="button" onClick={() => onSelect(profile.id)} aria-pressed={selectedProfileId === profile.id}>
-                <span className="account-large-avatar">{profile.name.slice(0, 1).toUpperCase()}</span>
-                <span><strong>{profile.name}</strong><small>UNVERIFIED · LOCAL TEST PROFILE</small></span>
-                {selectedProfileId === profile.id ? <span className="active-profile-badge"><CircleCheck size={14} /> Selected</span> : <span className="select-profile-label">Use profile</span>}
-              </button>
-              {selectedProfileId === profile.id && <div className="profile-identifier"><span>Offline UUID</span><code>{profile.uuid}</code></div>}
-            </article>
-          ))}</div> : <div className="empty-profile-state"><span className="empty-icon"><UsersRound size={22} /></span><strong>No developer profiles yet</strong><span>Create a local username to test the launcher and single-player launch flow.</span><button className="secondary-button" type="button" onClick={onCreate}><Plus size={15} /> Create the first profile</button></div>}
-          {profiles.length > 0 && <button className="secondary-button add-profile-button" type="button" onClick={onCreate}><Plus size={15} /> Add another profile</button>}
+          <section className="account-auth-section">
+            <div className="section-heading account-list-heading"><div><p className="eyebrow">OFFICIAL JAVA ACCOUNT</p><h2>Microsoft sign-in</h2></div><span className="count-pill">{microsoftAccounts.length}</span></div>
+            <p className="account-section-copy">Sign in through Microsoft’s system-browser flow. OpnLauncher checks for Minecraft Java ownership before saving the account.</p>
+            <label className="account-client-id-label" htmlFor="microsoft-client-id">Application (client) ID</label>
+            <div className="microsoft-signin-row">
+              <input id="microsoft-client-id" className="field-control" value={clientId} onChange={(event) => onClientIdChange(event.target.value)} placeholder="Your Microsoft Entra app client ID" autoComplete="off" spellCheck={false} aria-describedby="microsoft-client-help" />
+              <button className="play-button microsoft-signin-button" type="button" onClick={onSignIn} disabled={!desktop || signingIn || !clientId.trim()}>{signingIn ? <LoaderCircle className="spin" size={16} /> : <ExternalLink size={16} />}{signingIn ? "Waiting for Microsoft…" : "Continue with Microsoft"}</button>
+            </div>
+            <p className="account-client-help" id="microsoft-client-help">Use the public client ID from your own app registration. No client secret or password belongs in OpnLauncher.</p>
+            <div className="microsoft-setup-guide">
+              <div className="microsoft-guide-heading"><span className="microsoft-guide-mark"><ExternalLink size={16} /></span><span><strong>Connect your Microsoft account</strong><small>One-time app setup, then sign in here.</small></span><a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noreferrer">Open app registrations <ExternalLink size={13} /></a></div>
+              <ol>
+                <li><span>1</span><span>Create an app registration for personal Microsoft accounts and copy its <strong>Application (client) ID</strong>.</span></li>
+                <li><span>2</span><span>Under <strong>Authentication</strong>, add a <strong>Mobile and desktop application</strong> platform with <code>http://localhost</code>, then allow public client flows.</span></li>
+                <li><span>3</span><span>Paste the ID above. OpnLauncher opens Microsoft in your browser and verifies Minecraft Java ownership.</span></li>
+              </ol>
+              <a className="microsoft-guide-docs" href="https://learn.microsoft.com/en-us/entra/identity-platform/scenario-desktop-app-registration" target="_blank" rel="noreferrer">Read Microsoft’s desktop app registration guide <ArrowRight size={13} /></a>
+            </div>
+            {!desktop && <p className="account-inline-note"><Info size={15} /> Microsoft sign-in is available in the installed desktop app.</p>}
+            {error && <p className="account-auth-error" role="alert"><CircleAlert size={15} />{error}</p>}
+
+            {microsoftAccounts.length > 0 ? <div className="account-profile-list microsoft-account-list">{microsoftAccounts.map((account) => (
+              <article className={`account-profile-card ${selectedProfileId === account.id ? "selected" : ""}`} key={account.id}>
+                <div className="microsoft-account-row">
+                  <button className="account-profile-select" type="button" onClick={() => onSelect(account.id)} aria-pressed={selectedProfileId === account.id}>
+                    <span className="account-large-avatar microsoft-avatar">{account.name.slice(0, 1).toUpperCase()}</span>
+                    <span><strong>{account.name}</strong><small>VERIFIED · MINECRAFT JAVA</small></span>
+                    {selectedProfileId === account.id ? <span className="active-profile-badge"><CircleCheck size={14} /> Selected</span> : <span className="select-profile-label">Use account</span>}
+                  </button>
+                  <button className="account-signout-button" type="button" onClick={() => onSignOut(account)} aria-label={`Remove ${account.name} from OpnLauncher`} title="Remove account"><LogOut size={15} /></button>
+                </div>
+                <div className="profile-identifier"><span>Minecraft UUID</span><code>{account.uuid}</code></div>
+              </article>
+            ))}</div> : <div className="account-empty-inline"><ShieldCheck size={18} /><span>No verified Microsoft accounts saved on this device.</span></div>}
+          </section>
+
+          <section className="account-auth-section local-account-section">
+            <div className="section-heading account-list-heading"><div><p className="eyebrow">DEVELOPMENT AND OFFLINE TESTING</p><h2>Local profiles</h2></div><span className="count-pill">{profiles.length}</span></div>
+            <div className="profile-warning account-warning"><ShieldCheck size={18} /><span>Local profiles are unverified test identities. They do not prove ownership or grant Microsoft services or online-mode server access.</span></div>
+            {profiles.length > 0 ? <div className="account-profile-list">{profiles.map((profile) => (
+              <article className={`account-profile-card ${selectedProfileId === profile.id ? "selected" : ""}`} key={profile.id}>
+                <button className="account-profile-select" type="button" onClick={() => onSelect(profile.id)} aria-pressed={selectedProfileId === profile.id}>
+                  <span className="account-large-avatar">{profile.name.slice(0, 1).toUpperCase()}</span>
+                  <span><strong>{profile.name}</strong><small>UNVERIFIED · LOCAL TEST PROFILE</small></span>
+                  {selectedProfileId === profile.id ? <span className="active-profile-badge"><CircleCheck size={14} /> Selected</span> : <span className="select-profile-label">Use profile</span>}
+                </button>
+                {selectedProfileId === profile.id && <div className="profile-identifier"><span>Offline UUID</span><code>{profile.uuid}</code></div>}
+              </article>
+            ))}</div> : <div className="empty-profile-state"><span className="empty-icon"><UsersRound size={22} /></span><strong>No local profiles yet</strong><span>Create a local username for launcher development and offline testing.</span><button className="secondary-button" type="button" onClick={onCreate}><Plus size={15} /> Create the first profile</button></div>}
+            {profiles.length > 0 && <button className="secondary-button add-profile-button" type="button" onClick={onCreate}><Plus size={15} /> Add another profile</button>}
+          </section>
         </section>
 
         <aside className="account-boundaries-card">
           <div className="account-boundaries-icon"><ShieldCheck size={21} /></div>
-          <p className="eyebrow">TESTING BOUNDARIES</p><h2>Made for local development.</h2>
-          <p>Local profiles are useful for checking instances, settings, worlds, and single-player launches while account authentication is being built.</p>
-          <div className="boundary-list"><div><CircleCheck size={16} /><span>Local single-player testing</span></div><div><CircleCheck size={16} /><span>Stable local profile identity</span></div><div className="boundary-restricted"><CircleAlert size={16} /><span>No Microsoft or online-server authentication</span></div></div>
-          <div className="planned-signin"><span className="planned-badge"><span /> PLANNED</span><strong>Microsoft sign-in</strong><small>Official authentication will be added as a separate account type.</small></div>
-          {selectedProfile && <div className="selected-profile-note">Current test profile: <strong>{selectedProfile.name}</strong></div>}
+          <p className="eyebrow">ACCOUNT SAFETY</p><h2>Two account types, separate purposes.</h2>
+          <p>Microsoft accounts are checked with Microsoft, Xbox services, and Minecraft services. Local profiles stay on this device for development and offline testing.</p>
+          <div className="boundary-list"><div><CircleCheck size={16} /><span>Java sessions refresh before launch.</span></div><div><CircleCheck size={16} /><span>Refresh tokens stay in the Linux desktop credential store.</span></div><div className="boundary-restricted"><CircleAlert size={16} /><span>Secure Microsoft token storage for Windows and macOS is not ready in this build.</span></div><div className="boundary-restricted"><CircleAlert size={16} /><span>Horizon Rust currently uses local profiles; Microsoft sign-in is not connected to Horizon.</span></div></div>
+          <div className="planned-signin"><span className="planned-badge"><span /> PRIVACY</span><strong>No launcher account or tracking</strong><small>OpnLauncher does not operate an account server. Authentication requests go directly to Microsoft, Xbox, and Minecraft services when you sign in or launch.</small></div>
+          {selectedProfile && <div className="selected-profile-note">Currently selected: <strong>{selectedProfile.name}</strong>{selectedProfileId.startsWith("microsoft:") ? " · verified" : " · local and unverified"}</div>}
         </aside>
       </div>
     </>

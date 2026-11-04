@@ -40,6 +40,8 @@ Remaining follow-up priorities:
 
 ### 0.3.0 — Official account authentication
 
+Status: an experimental Linux-only implementation is present in `0.1.0-dev.42`. This milestone is not complete until live Minecraft Java login/launch and secure token storage on each supported desktop platform have been verified.
+
 - Implement Microsoft sign-in through the system browser and the supported Xbox/Minecraft authentication flow.
 - Verify Minecraft ownership and retrieve the Java profile.
 - Store tokens in operating-system credential storage where available; never log or send them to an OpnLauncher server.

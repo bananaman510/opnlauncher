@@ -16,6 +16,7 @@ import {
   Layers3,
   LoaderCircle,
   PackageCheck,
+  RefreshCw,
   Search,
   ShieldAlert,
   ShieldCheck,
@@ -24,7 +25,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { latestCompatibleModVersion, matchingInstalledMod } from "../modVersions";
+import { latestCompatibleModUpdate, latestCompatibleModVersion, matchingInstalledMod } from "../modVersions";
+import { filterInstalledMods, type InstalledModFilter } from "../libraryFilters";
 import { ModVersionSwitchDialog } from "./ModVersionSwitchDialog";
 import type {
   InstalledMod,
@@ -46,12 +48,17 @@ interface ModsPageProps {
   onOpenInstances: () => void;
   curseForgeKey: string;
   onCurseForgeKeyChange: (value: string) => void;
+  horizonFabricMode?: boolean;
+  hidePageHeading?: boolean;
+  hideInstancePicker?: boolean;
+  onModsChanged?: () => void;
 }
 
 type LibraryTab = "discover" | "installed";
 type ModSort = "relevance" | "downloads" | "updated" | "newest";
 type LoaderFilter = "fabric" | "forge" | "neoforge" | "quilt";
 type CardInstallFeedback = { projectKey: string; instanceId: string; kind: "success" | "error"; message: string };
+type ModUpdateCandidate = { mod: InstalledMod; source: ModInstallSource; version: ModVersion };
 
 const loaders: { id: LoaderFilter; name: string }[] = [
   { id: "fabric", name: "Fabric" },
@@ -86,7 +93,7 @@ function modProjectKey(project: Pick<ModProject, "provider" | "id">): string {
   return `${project.provider}:${project.id}`;
 }
 
-export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInstance, onOpenInstances, curseForgeKey, onCurseForgeKeyChange }: ModsPageProps) {
+export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInstance, onOpenInstances, curseForgeKey, onCurseForgeKeyChange, horizonFabricMode = false, hidePageHeading = false, hideInstancePicker = false, onModsChanged }: ModsPageProps) {
   const [libraryTab, setLibraryTab] = useState<LibraryTab>("discover");
   const [provider, setProvider] = useState<ModProvider>("modrinth");
   const [query, setQuery] = useState("");
@@ -101,6 +108,14 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
   const [error, setError] = useState("");
   const [installedMods, setInstalledMods] = useState<InstalledMod[]>([]);
   const [installedError, setInstalledError] = useState("");
+  const [installedQuery, setInstalledQuery] = useState("");
+  const [installedFilter, setInstalledFilter] = useState<InstalledModFilter>("all");
+  const [installedSort, setInstalledSort] = useState<"name" | "size" | "enabled">("name");
+  const [availableUpdates, setAvailableUpdates] = useState<ModUpdateCandidate[]>([]);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [isUpdatingAllMods, setIsUpdatingAllMods] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState("");
+  const [updateError, setUpdateError] = useState("");
   const [selectedProject, setSelectedProject] = useState<ModProject | null>(null);
   const [projectVersions, setProjectVersions] = useState<ModVersion[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState("");
@@ -119,6 +134,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
   const [bulkRemoveTarget, setBulkRemoveTarget] = useState<string[] | null>(null);
   const [bulkRemoveError, setBulkRemoveError] = useState("");
   const [isRemovingMods, setIsRemovingMods] = useState(false);
+  const [isBulkUpdatingMods, setIsBulkUpdatingMods] = useState(false);
   const [isSwitchingVersion, setIsSwitchingVersion] = useState(false);
   const [busyFile, setBusyFile] = useState("");
   const [imageIndex, setImageIndex] = useState(0);
@@ -131,8 +147,14 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
   instanceContextRef.current = instanceContext;
 
   const selectedVersion = projectVersions.find((version) => version.id === selectedVersionId) ?? projectVersions[0] ?? null;
+  const selectedInstance = instances.find((instance) => instance.id === selectedInstanceId) ?? null;
   const requiredDependencyCount = selectedVersion?.dependencies.filter((dependency) => dependency.dependencyType === "required").length ?? 0;
   const selectedProjectIsInstalled = Boolean(selectedProject && matchingInstalledMod(selectedProject, installedMods));
+  const visibleInstalledMods = useMemo(() => filterInstalledMods(installedMods, installedQuery, installedFilter).sort((left, right) => {
+    if (installedSort === "size") return right.size - left.size || left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+    if (installedSort === "enabled") return Number(right.enabled) - Number(left.enabled) || left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+    return left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+  }), [installedFilter, installedMods, installedQuery, installedSort]);
   const categories = useMemo(() => [...new Set(projects.flatMap((project) => project.categories))].slice(0, 12), [projects]);
   const [categoryFilter, setCategoryFilter] = useState("");
   const filteredProjects = useMemo(() => categoryFilter ? projects.filter((project) => project.categories.includes(categoryFilter)) : projects, [categoryFilter, projects]);
@@ -185,6 +207,9 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
     if (!desktop || !selectedInstanceId) {
       setInstanceContext(null);
       setInstalledMods([]);
+      setAvailableUpdates([]);
+      setUpdateStatus("");
+      setUpdateError("");
       setSelectedModFiles([]);
       setSwitchTarget(null);
       setRemoveTarget(null);
@@ -203,6 +228,9 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
       if (cancelled) return;
       setInstanceContext(context);
       setInstalledMods(installed);
+      setAvailableUpdates([]);
+      setUpdateStatus("");
+      setUpdateError("");
       if (context.loader && loaders.some((loader) => loader.id === context.loader)) setLoaderFilter(context.loader as LoaderFilter);
     }).catch((reason) => {
       if (!cancelled) setInstalledError(String(reason));
@@ -261,11 +289,92 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
     try {
       const installed = await invoke<InstalledMod[]>("list_installed_mods", { instanceId: selectedInstanceId });
       setInstalledMods(installed);
+      setAvailableUpdates((current) => current.filter((candidate) => installed.some((mod) => mod.fileName === candidate.mod.fileName)));
       setSelectedModFiles((current) => current.filter((fileName) => installed.some((mod) => mod.fileName === fileName)));
       setInstalledError("");
     } catch (reason) {
       setInstalledError(String(reason));
     }
+  }
+
+  async function checkForUpdates() {
+    const context = instanceContext;
+    const targetInstanceId = selectedInstanceId;
+    if (!desktop || !targetInstanceId || !context?.minecraftVersion || !context.loader || isCheckingUpdates || isUpdatingAllMods) return;
+    setIsCheckingUpdates(true);
+    setAvailableUpdates([]);
+    setUpdateStatus("Checking installed mods with their original providers…");
+    setUpdateError("");
+    setInstalledError("");
+    const candidates: ModUpdateCandidate[] = [];
+    let untracked = Math.max(0, installedMods.length - 100);
+    const checkableMods = installedMods.slice(0, 100);
+    try {
+      for (let index = 0; index < checkableMods.length; index += 1) {
+        if (selectedInstanceIdRef.current !== targetInstanceId) return;
+        const mod = checkableMods[index];
+        setUpdateStatus(`Checking ${index + 1} of ${checkableMods.length}: ${mod.name}`);
+        try {
+          const source = mod.source ?? await invoke<ModInstallSource | null>("resolve_installed_mod_source", {
+            instanceId: targetInstanceId,
+            fileName: mod.fileName,
+          });
+          if (!source?.versionId) {
+            untracked += 1;
+            continue;
+          }
+          const versions = await invoke<ModVersion[]>("get_all_mod_project_versions", {
+            provider: source.provider,
+            projectId: source.projectId,
+            apiKey: source.provider === "curseforge" ? curseForgeKey || null : null,
+          });
+          const version = latestCompatibleModUpdate(versions, source.versionId, context.minecraftVersion, context.loader);
+          if (version) candidates.push({ mod, source, version });
+        } catch {
+          untracked += 1;
+        }
+      }
+      if (selectedInstanceIdRef.current !== targetInstanceId) return;
+      setAvailableUpdates(candidates);
+      const skippedMessage = untracked > 0 ? ` ${untracked} file${untracked === 1 ? " was" : "s were"} unlinked or could not be checked.` : "";
+      setUpdateStatus(candidates.length ? `${candidates.length} compatible update${candidates.length === 1 ? "" : "s"} found.${skippedMessage}` : `No compatible updates found.${skippedMessage}`);
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  }
+
+  async function updateAllMods() {
+    if (!availableUpdates.length || isUpdatingAllMods || !selectedInstanceId) return;
+    const targetInstanceId = selectedInstanceId;
+    const pending = [...availableUpdates];
+    const failed: string[] = [];
+    let succeeded = 0;
+    setIsUpdatingAllMods(true);
+    setUpdateError("");
+    setUpdateStatus(`Updating 0 of ${pending.length} mods…`);
+    for (let index = 0; index < pending.length; index += 1) {
+      const candidate = pending[index];
+      if (selectedInstanceIdRef.current !== targetInstanceId) {
+        failed.push(`${candidate.mod.name}: stopped because the selected instance changed`);
+        break;
+      }
+      setUpdateStatus(`Updating ${index + 1} of ${pending.length}: ${candidate.mod.name}`);
+      try {
+        const updatedMods = await switchInstalledModVersion(candidate.mod, candidate.source, candidate.version);
+        succeeded += 1;
+        setAvailableUpdates((current) => current.filter((item) => item.mod.fileName !== candidate.mod.fileName));
+        for (let nextIndex = index + 1; nextIndex < pending.length; nextIndex += 1) {
+          const linked = updatedMods.find((mod) => mod.source?.provider === pending[nextIndex].source.provider && mod.source.projectId === pending[nextIndex].source.projectId);
+          if (linked) pending[nextIndex] = { ...pending[nextIndex], mod: linked };
+        }
+      } catch (reason) {
+        failed.push(`${candidate.mod.name}: ${reason instanceof Error ? reason.message : String(reason)}`);
+      }
+    }
+    setIsUpdatingAllMods(false);
+    if (failed.length) setUpdateStatus(`${succeeded} updated; ${failed.length} could not be updated. Review the error below and rescan.`);
+    else setUpdateStatus(`Updated ${pending.length} mod${pending.length === 1 ? "" : "s"} for Minecraft ${instanceContext?.minecraftVersion} · ${loaderName(instanceContext?.loader)}.`);
+    if (failed.length) setUpdateError(failed.join("\n"));
   }
 
   function restartSearch() {
@@ -332,6 +441,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
         setLibraryTab("installed");
         setSelectedProject(null);
       }
+      onModsChanged?.();
       setDownloadProgress(null);
     } catch (reason) {
       setInstallError(String(reason));
@@ -390,6 +500,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
         kind: "success",
         message: `Installed ${version.versionNumber} for Minecraft ${targetContext.minecraftVersion} · ${loaderName(targetContext.loader)}.`,
       });
+      onModsChanged?.();
       setDownloadProgress(null);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -410,11 +521,12 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
   }
 
   async function toggleMod(mod: InstalledMod) {
-    if (!selectedInstanceId) return;
+    if (!selectedInstanceId || isBulkUpdatingMods) return;
     setBusyFile(mod.fileName);
     try {
       await invoke("set_mod_enabled", { instanceId: selectedInstanceId, fileName: mod.fileName, enabled: !mod.enabled });
       await refreshInstalled();
+      onModsChanged?.();
     } catch (reason) {
       setInstalledError(String(reason));
     } finally {
@@ -423,12 +535,13 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
   }
 
   async function removeMod() {
-    if (!selectedInstanceId || !removeTarget) return;
+    if (!selectedInstanceId || !removeTarget || isBulkUpdatingMods) return;
     setBusyFile(removeTarget.fileName);
     try {
       await invoke("remove_mod_file", { instanceId: selectedInstanceId, fileName: removeTarget.fileName, confirmed: true });
       setRemoveTarget(null);
       await refreshInstalled();
+      onModsChanged?.();
     } catch (reason) {
       setInstalledError(String(reason));
     } finally {
@@ -443,19 +556,45 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
   }
 
   function toggleAllModSelection() {
-    setSelectedModFiles((current) => current.length === installedMods.length
-      ? []
-      : installedMods.map((mod) => mod.fileName));
+    const visibleNames = visibleInstalledMods.map((mod) => mod.fileName);
+    const allVisibleSelected = visibleNames.length > 0 && visibleNames.every((fileName) => selectedModFiles.includes(fileName));
+    setSelectedModFiles((current) => allVisibleSelected
+      ? current.filter((fileName) => !visibleNames.includes(fileName))
+      : [...new Set([...current, ...visibleNames])]);
+  }
+
+  async function setSelectedModsEnabled() {
+    if (!selectedInstanceId || selectedModFiles.length === 0 || isBulkUpdatingMods || busyFile || isSwitchingVersion || isRemovingMods) return;
+    const selectedMods = installedMods.filter((mod) => selectedModFiles.includes(mod.fileName));
+    const enable = selectedMods.some((mod) => !mod.enabled);
+    setIsBulkUpdatingMods(true);
+    setInstalledError("");
+    try {
+      for (const mod of selectedMods) {
+        if (mod.enabled !== enable) {
+          await invoke("set_mod_enabled", { instanceId: selectedInstanceId, fileName: mod.fileName, enabled: enable });
+        }
+      }
+      setSelectedModFiles([]);
+      await refreshInstalled();
+      onModsChanged?.();
+    } catch (reason) {
+      setInstalledError(`Some selected mods may not have changed. ${String(reason)}`);
+      await refreshInstalled();
+    } finally {
+      setIsBulkUpdatingMods(false);
+    }
   }
 
   async function removeBulkTarget() {
-    if (!selectedInstanceId || !bulkRemoveTarget?.length || isRemovingMods) return;
+    if (!selectedInstanceId || !bulkRemoveTarget?.length || isRemovingMods || isBulkUpdatingMods) return;
     setIsRemovingMods(true);
     try {
       await invoke("remove_mod_files", { instanceId: selectedInstanceId, fileNames: bulkRemoveTarget, confirmed: true });
       setBulkRemoveTarget(null);
       setSelectedModFiles([]);
       await refreshInstalled();
+      onModsChanged?.();
     } catch (reason) {
       const message = String(reason);
       setInstalledError(message);
@@ -465,8 +604,8 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
     }
   }
 
-  async function switchInstalledModVersion(mod: InstalledMod, source: ModInstallSource, version: ModVersion) {
-    if (!selectedInstanceId || !source || isSwitchingVersion) return;
+  async function switchInstalledModVersion(mod: InstalledMod, source: ModInstallSource, version: ModVersion): Promise<InstalledMod[]> {
+    if (!selectedInstanceId || !source || isSwitchingVersion || isBulkUpdatingMods) return [];
     const targetInstanceId = selectedInstanceId;
     const id = crypto.randomUUID();
     activeDownloadId.current = id;
@@ -489,7 +628,9 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
         setInstalledError("");
         setSelectedModFiles((current) => current.filter((fileName) => fileName !== mod.fileName));
       }
+      onModsChanged?.();
       setDownloadProgress(null);
+      return installed;
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setInstallError(message);
@@ -506,28 +647,29 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
 
   return (
     <>
-      <section className="mods-page-heading">
+      {!horizonFabricMode && !hidePageHeading && <section className="mods-page-heading">
         <div>
           <p className="eyebrow"><PackageCheck size={14} /> MODDING WORKSPACE</p>
           <h1>Mods, made manageable.</h1>
           <p className="page-subtitle">Explore trusted projects, choose the build for your exact Minecraft and loader version, and keep each instance's mods tidy.</p>
         </div>
         <span className="mods-heading-badge"><Sparkles size={15} /> Curated by their authors</span>
-      </section>
+      </section>}
 
       {!desktop && <div className="notice-banner"><CircleAlert size={17} /><span>Open OpnLauncher as a desktop app to browse providers and manage your local mods.</span></div>}
 
       <section className="mod-instance-context">
         <div className="mod-context-icon"><Boxes size={19} /></div>
         <div className="mod-context-picker">
-          <label htmlFor="mods-instance">Working with this instance</label>
-          {instances.length ? <div className="select-wrap"><select id="mods-instance" className="field-control" value={selectedInstanceId ?? ""} onChange={(event) => { onSelectInstance(event.target.value); restartSearch(); }}>
+          <label htmlFor={hideInstancePicker ? undefined : "mods-instance"}>Working with this instance</label>
+          {hideInstancePicker ? <span className="mod-context-empty">{selectedInstance?.name ?? "Choose a Horizon profile"}</span> : instances.length ? <div className="select-wrap"><select id="mods-instance" className="field-control" value={selectedInstanceId ?? ""} onChange={(event) => { onSelectInstance(event.target.value); restartSearch(); }}>
             {instances.map((instance) => <option value={instance.id} key={instance.id}>{instance.name}{instance.versionId ? ` · ${instance.versionId}` : ""}</option>)}
           </select><ChevronDown size={16} /></div> : <span className="mod-context-empty">Add an instance to begin.</span>}
         </div>
         {instanceContext?.minecraftVersion && <span className="mod-version-chip"><Layers3 size={14} /> Minecraft {instanceContext.minecraftVersion}</span>}
-        {instanceContext?.loader ? <span className="mod-loader-chip"><span className={`loader-mark loader-${instanceContext.loader}`} />{loaderName(instanceContext.loader)}</span> : <label className="mod-loader-filter"><span>Browse for</span><select aria-label="Choose a loader to browse" value={loaderFilter} onChange={(event) => { setLoaderFilter(event.target.value as LoaderFilter); restartSearch(); }}>{loaders.map((loader) => <option value={loader.id} key={loader.id}>{loader.name}</option>)}</select><ChevronDown size={14} /></label>}
+        {instanceContext?.loader ? <span className="mod-loader-chip"><span className={`loader-mark loader-${instanceContext.loader}`} />{horizonFabricMode ? "Fabric Loader" : loaderName(instanceContext.loader)}</span> : <label className="mod-loader-filter"><span>Browse for</span><select aria-label="Choose a loader to browse" value={loaderFilter} onChange={(event) => { setLoaderFilter(event.target.value as LoaderFilter); restartSearch(); }}>{loaders.map((loader) => <option value={loader.id} key={loader.id}>{loader.name}</option>)}</select><ChevronDown size={14} /></label>}
       </section>
+      {horizonFabricMode && <div className="mods-java-runtime-note"><ShieldAlert size={15} /><span><strong>Optional Java + Fabric mode.</strong> These unchanged Fabric JARs run in this profile's isolated Java Minecraft copy. They do not run inside the Rust Horizon engine; switch the profile back to Horizon Rust in Horizon settings to use its separate worlds and content.</span></div>}
       {instanceContext?.sharedGameDirectory && <div className="mods-shared-warning"><CircleAlert size={15} /><span>This game folder is shared with another instance. Changes to its mods folder may affect both.</span></div>}
       {instanceContext && (!instanceContext.minecraftVersion || !instanceContext.loader) && <div className="mods-loader-notice"><CircleAlert size={15} /><span>{instanceContext.minecraftVersion ? "This instance is vanilla. Configure its Fabric or Forge version in Instances → Game setup; this mod list will then match it automatically." : "Choose a Minecraft version and Fabric or Forge loader for this instance in Instances → Game setup before installing mods."}</span><button type="button" className="text-link" onClick={onOpenInstances}>Configure instance <ArrowUpRight size={14} /></button></div>}
 
@@ -608,27 +750,31 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
           </>
         ) : (
           <div className="installed-mods-panel">
-            <div className="installed-mods-heading"><div><span className="eyebrow">INSTANCE CONTENT</span><h2>{installedMods.length} installed mod{installedMods.length === 1 ? "" : "s"}</h2><p>Manage JAR files in this instance's mods folder.</p></div><div className="installed-mods-tools"><button className="secondary-button" type="button" onClick={() => void refreshInstalled()} disabled={!desktop}><ArrowDownToLine size={15} /> Rescan folder</button>{installedMods.length > 0 && <><button className="secondary-button" type="button" onClick={toggleAllModSelection}>{selectedModFiles.length === installedMods.length ? "Clear selection" : "Select all"}</button><button className="danger-button" type="button" onClick={() => { setBulkRemoveError(""); setBulkRemoveTarget(installedMods.map((mod) => mod.fileName)); }}><Trash2 size={14} /> Delete all</button></>}</div></div>
+            <div className="installed-mods-heading"><div><span className="eyebrow">INSTANCE CONTENT</span><h2>{installedMods.length} installed mod{installedMods.length === 1 ? "" : "s"}</h2><p>Search, compare compatible releases, update, enable, or remove files in this instance.</p></div><div className="installed-mods-tools"><button className="secondary-button" type="button" onClick={() => void checkForUpdates()} disabled={!desktop || !installedMods.length || isCheckingUpdates || isUpdatingAllMods}><RefreshCw className={isCheckingUpdates ? "spin" : ""} size={15} />{isCheckingUpdates ? "Checking…" : "Check updates"}</button>{availableUpdates.length > 0 && <button className="play-button" type="button" onClick={() => void updateAllMods()} disabled={isUpdatingAllMods || isCheckingUpdates || isSwitchingVersion}><ArrowDownToLine size={15} />{isUpdatingAllMods ? "Updating…" : `Update all · ${availableUpdates.length}`}</button>}{installedMods.length > 0 && <><button className="secondary-button" type="button" onClick={toggleAllModSelection} disabled={isBulkUpdatingMods || isUpdatingAllMods}>{visibleInstalledMods.length > 0 && visibleInstalledMods.every((mod) => selectedModFiles.includes(mod.fileName)) ? "Clear visible" : "Select visible"}</button><button className="danger-button" type="button" disabled={isBulkUpdatingMods || isUpdatingAllMods} onClick={() => { setBulkRemoveError(""); setBulkRemoveTarget(installedMods.map((mod) => mod.fileName)); }}><Trash2 size={14} /> Delete all</button></>}</div></div>
+            {updateStatus && <div className="mod-update-status" role="status"><span className={isCheckingUpdates || isUpdatingAllMods ? "is-working" : ""} />{updateStatus}</div>}
+            {updateError && <div className="error-banner mod-error mod-update-error" role="alert"><CircleAlert size={15} /><span>{updateError}</span></div>}
+            {installedMods.length > 0 && <div className="installed-mods-toolbar"><label className="search-box"><Search size={16} /><input aria-label="Search installed mods" placeholder="Find a mod or file" value={installedQuery} onChange={(event) => setInstalledQuery(event.target.value)} /></label><div className="installed-state-filters" role="group" aria-label="Filter installed mods">{([{ id: "all", label: "All" }, { id: "enabled", label: "Enabled" }, { id: "disabled", label: "Disabled" }] as const).map((filter) => <button type="button" key={filter.id} className={installedFilter === filter.id ? "selected" : ""} onClick={() => setInstalledFilter(filter.id)} aria-pressed={installedFilter === filter.id}>{filter.label}{filter.id === "all" ? <small>{installedMods.length}</small> : <small>{installedMods.filter((mod) => filter.id === "enabled" ? mod.enabled : !mod.enabled).length}</small>}</button>)}</div><label className="installed-sort"><SlidersHorizontal size={14} /><select value={installedSort} onChange={(event) => setInstalledSort(event.target.value as typeof installedSort)} aria-label="Sort installed mods"><option value="name">Name</option><option value="size">Largest files</option><option value="enabled">Enabled first</option></select><ChevronDown size={13} /></label></div>}
             {!desktop ? <div className="mod-empty-state compact"><span>Open the desktop app to read local files.</span></div>
               : installedError ? <div className="error-banner mod-error" role="alert"><CircleAlert size={16} />{installedError}</div>
                 : installedMods.length === 0 ? <div className="mod-empty-state"><span className="mod-empty-icon"><PackageCheck size={22} /></span><strong>No mod files here yet</strong><span>Pick a modded instance and install a compatible project from Discover.</span><button className="secondary-button" type="button" onClick={() => setLibraryTab("discover")}><Search size={15} /> Browse mods</button></div>
                   : <>
-                  {selectedModFiles.length > 0 && <div className="installed-selection-bar"><span>{selectedModFiles.length} of {installedMods.length} selected</span><button className="danger-button" type="button" onClick={() => { setBulkRemoveError(""); setBulkRemoveTarget([...selectedModFiles]); }}><Trash2 size={14} /> Delete selected</button></div>}
-                  <div className="installed-mod-list">{installedMods.map((mod) => <article className={`installed-mod-row ${mod.enabled ? "" : "is-disabled"}`} key={mod.fileName}>
-                    <input className="installed-mod-checkbox" type="checkbox" checked={selectedModFiles.includes(mod.fileName)} onChange={() => toggleModSelection(mod.fileName)} aria-label={`Select ${mod.name}`} />
+                  {selectedModFiles.length > 0 && <div className="installed-selection-bar"><span>{selectedModFiles.length} of {installedMods.length} selected</span><div><button className="secondary-button" type="button" onClick={() => void setSelectedModsEnabled()} disabled={!desktop || isBulkUpdatingMods || Boolean(busyFile) || isSwitchingVersion || isRemovingMods || isUpdatingAllMods}>{isBulkUpdatingMods ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}{isBulkUpdatingMods ? "Updating…" : selectedModFiles.some((fileName) => installedMods.some((mod) => mod.fileName === fileName && !mod.enabled)) ? "Enable selected" : "Disable selected"}</button><button className="danger-button" type="button" disabled={isBulkUpdatingMods || isUpdatingAllMods} onClick={() => { setBulkRemoveError(""); setBulkRemoveTarget([...selectedModFiles]); }}><Trash2 size={14} /> Delete selected</button></div></div>}
+                  {visibleInstalledMods.length === 0 ? <div className="mod-empty-state compact"><span>No installed mods match these filters.</span><button type="button" className="text-link" onClick={() => { setInstalledQuery(""); setInstalledFilter("all"); }}>Clear search and filters</button></div> : <div className="installed-mod-list">{visibleInstalledMods.map((mod) => { const update = availableUpdates.find((candidate) => candidate.mod.fileName === mod.fileName); return <article className={`installed-mod-row ${mod.enabled ? "" : "is-disabled"} ${update ? "has-update" : ""}`} key={mod.fileName}>
+                    <input className="installed-mod-checkbox" type="checkbox" checked={selectedModFiles.includes(mod.fileName)} onChange={() => toggleModSelection(mod.fileName)} aria-label={`Select ${mod.name}`} disabled={isBulkUpdatingMods || isUpdatingAllMods} />
                     <span className={`installed-mod-icon ${mod.enabled ? "" : "disabled"}`}>{mod.enabled ? <PackageCheck size={18} /> : <CircleAlert size={18} />}</span>
-                    <span className="installed-mod-copy"><strong>{mod.name}</strong><small>{mod.version ? `Version ${mod.version} · ` : ""}{mod.fileName} · {formatBytes(mod.size)}</small></span>
+                    <span className="installed-mod-copy"><strong>{mod.name}{update && <span className="mod-update-pill">Update ready</span>}</strong><small>{mod.version ? `Version ${mod.version} · ` : ""}{mod.fileName} · {formatBytes(mod.size)}{update ? ` · latest ${update.version.versionNumber}` : ""}</small></span>
                     <span className={`installed-mod-state ${mod.enabled ? "enabled" : "disabled"}`}>{mod.enabled ? "Enabled" : "Disabled"}</span>
-                    <button className="secondary-button installed-switch" type="button" disabled={!desktop || isSwitchingVersion} onClick={() => setSwitchTarget(mod)}><ArrowDownUp size={14} /> Switch version</button>
-                    <button className="secondary-button installed-toggle" type="button" disabled={busyFile === mod.fileName} onClick={() => void toggleMod(mod)}>{busyFile === mod.fileName ? <LoaderCircle className="spin" size={14} /> : mod.enabled ? "Disable" : "Enable"}</button>
-                    <button className="icon-button installed-remove" type="button" disabled={busyFile === mod.fileName} aria-label={`Remove ${mod.name}`} onClick={() => setRemoveTarget(mod)}><Trash2 size={16} /></button>
-                  </article>)}</div>
+                    {update && <button className="play-button installed-update" type="button" disabled={!desktop || isSwitchingVersion || isBulkUpdatingMods || isUpdatingAllMods} onClick={() => { void switchInstalledModVersion(mod, update.source, update.version).then(() => { setAvailableUpdates((current) => current.filter((candidate) => candidate.mod.fileName !== mod.fileName)); setUpdateError(""); }).catch((reason) => { setUpdateStatus(`Could not update ${mod.name}.`); setUpdateError(reason instanceof Error ? reason.message : String(reason)); }); }}><ArrowDownToLine size={14} /> Update</button>}
+                    <button className="secondary-button installed-switch" type="button" disabled={!desktop || isSwitchingVersion || isBulkUpdatingMods || isUpdatingAllMods} onClick={() => setSwitchTarget(mod)}><ArrowDownUp size={14} /> Switch version</button>
+                    <button className="secondary-button installed-toggle" type="button" disabled={busyFile === mod.fileName || isBulkUpdatingMods || isUpdatingAllMods} onClick={() => void toggleMod(mod)}>{busyFile === mod.fileName ? <LoaderCircle className="spin" size={14} /> : mod.enabled ? "Disable" : "Enable"}</button>
+                    <button className="icon-button installed-remove" type="button" disabled={busyFile === mod.fileName || isBulkUpdatingMods || isUpdatingAllMods} aria-label={`Remove ${mod.name}`} onClick={() => setRemoveTarget(mod)}><Trash2 size={16} /></button>
+                  </article>; })}</div>}
                   </>}
           </div>
         )}
       </section>
 
-      <section className="mod-privacy-note"><ShieldCheck size={17} /><span><strong>Provider requests are visible and on demand.</strong> Search and build requests go to the selected provider; project images load from its CDN. CurseForge keys stay in app memory for this session. Verified files go into this instance's mods folder; OpnLauncher does not run mods during installation.</span></section>
+      <section className="mod-privacy-note"><ShieldCheck size={17} /><span><strong>Provider requests are visible and on demand.</strong> Search and build requests go to the selected provider; project images load from its CDN. CurseForge keys stay in app memory for this session. Verified files go into this instance's mods folder; OpnLauncher does not run mods during installation.{horizonFabricMode && " On launch, Fabric and the selected Java mods execute in the isolated Java game process, not in Rust Horizon."}</span></section>
 
       {downloadProgress && <section className="mod-download-card">
         <div className="mod-download-heading"><span className="mod-download-icon"><LoaderCircle className={isInstalling ? "spin" : ""} size={17} /></span><span><strong>{downloadProgress.projectTitle}</strong><small>{downloadProgress.phase}{downloadProgress.currentFile ? ` · ${downloadProgress.currentFile}` : ""}</small></span>{isInstalling && <button className="secondary-button" type="button" onClick={() => void cancelInstall()}>Cancel</button>}</div>
@@ -688,7 +834,7 @@ export function ModsPage({ desktop, instances, selectedInstanceId, onSelectInsta
         <section className="modal-card small-modal" role="alertdialog" aria-modal="true" aria-labelledby="mod-bulk-remove-title"><div className="modal-header"><div><p className="eyebrow danger-eyebrow"><Trash2 size={14} /> REMOVE MOD FILES</p><h2 id="mod-bulk-remove-title">Delete {bulkRemoveTarget.length === installedMods.length ? "all" : "selected"} mods?</h2></div><button className="icon-button" type="button" aria-label="Close" onClick={() => setBulkRemoveTarget(null)} disabled={isRemovingMods}><X size={18} /></button></div><p className="modal-copy">This permanently removes {bulkRemoveTarget.length} mod file{bulkRemoveTarget.length === 1 ? "" : "s"} from this instance's mods folder. Other instance files, saves, and settings are not changed.</p>{bulkRemoveError && <div className="error-banner mod-error bulk-remove-error" role="alert"><CircleAlert size={15} /><span>{bulkRemoveError}</span></div>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setBulkRemoveTarget(null)} disabled={isRemovingMods}>Keep files</button><button className="danger-button" type="button" onClick={() => void removeBulkTarget()} disabled={isRemovingMods}>{isRemovingMods ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}{isRemovingMods ? "Deleting…" : `Delete ${bulkRemoveTarget.length} mod${bulkRemoveTarget.length === 1 ? "" : "s"}`}</button></div></section>
       </div>}
 
-      {switchTarget && selectedInstanceId && <ModVersionSwitchDialog mod={switchTarget} instanceId={selectedInstanceId} context={instanceContext} initialProvider={provider} curseForgeKey={curseForgeKey} switching={isSwitchingVersion} onClose={() => setSwitchTarget(null)} onRequestCurseForgeKey={() => { setSwitchTarget(null); setProvider("curseforge"); setKeyDraft(curseForgeKey); setShowKeyInput(true); }} onSwitch={switchInstalledModVersion} />}
+      {switchTarget && selectedInstanceId && <ModVersionSwitchDialog mod={switchTarget} instanceId={selectedInstanceId} context={instanceContext} initialProvider={provider} curseForgeKey={curseForgeKey} switching={isSwitchingVersion} onClose={() => setSwitchTarget(null)} onRequestCurseForgeKey={() => { setSwitchTarget(null); setProvider("curseforge"); setKeyDraft(curseForgeKey); setShowKeyInput(true); }} onSwitch={async (mod, source, version) => { await switchInstalledModVersion(mod, source, version); }} />}
     </>
   );
 }

@@ -55,9 +55,32 @@ pub struct Instance {
     pub game_dir: String,
     pub version_id: Option<String>,
     pub java_path: Option<String>,
+    /// Optional isolated Java/Fabric runtime used by a Horizon profile. This runs the
+    /// Java Minecraft client for Fabric compatibility; it is not code executed by Rust Horizon.
+    pub horizon_fabric_enabled: bool,
+    pub horizon_fabric_version_id: Option<String>,
+    pub horizon_fabric_java_path: Option<String>,
     pub memory_mb: u32,
     pub created_at: i64,
     pub last_played_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaytimeSession {
+    pub id: String,
+    pub instance_id: String,
+    pub started_at: i64,
+    pub last_updated_at: i64,
+    pub ended_at: Option<i64>,
+    pub duration_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaytimeSummary {
+    pub lifetime_seconds: u64,
+    pub sessions: Vec<PlaytimeSession>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,6 +91,27 @@ pub struct OfflineProfile {
     pub uuid: String,
     pub verified: bool,
     pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MicrosoftAccount {
+    pub id: String,
+    pub name: String,
+    pub uuid: String,
+    pub created_at: i64,
+}
+
+/// Runtime identity for a Java launch. Access tokens stay in backend memory and
+/// are never serialized to the frontend or written to launcher logs.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LaunchProfile {
+    pub name: String,
+    pub uuid: String,
+    pub access_token: String,
+    pub user_type: String,
+    pub xuid: String,
+    pub verified: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

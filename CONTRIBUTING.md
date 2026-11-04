@@ -1,6 +1,6 @@
 # Contributing
 
-OpnLauncher is an early development project. The public GitHub snapshot is version `0.1.0-dev.16`; it is not stable and behavior or local data formats may change. Contributions should fit the local-first, privacy-preserving scope and must not add telemetry, advertising, hidden network requests, authentication bypasses, or bundled Minecraft assets.
+OpnLauncher is an early development project. The current version is `0.1.0-dev.17`; it is not stable and behavior or local data formats may change. Contributions should fit the local-first, privacy-preserving scope and must not add telemetry, advertising, hidden network requests, authentication bypasses, or bundled Minecraft assets.
 
 ## Development
 

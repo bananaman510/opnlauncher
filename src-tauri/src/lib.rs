@@ -8,6 +8,7 @@ pub mod loaders;
 pub mod minecraft;
 pub mod mods;
 pub mod models;
+pub mod microsoft_auth;
 
 #[cfg(feature = "desktop")]
 mod app;

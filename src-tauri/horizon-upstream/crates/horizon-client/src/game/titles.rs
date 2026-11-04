@@ -11,6 +11,13 @@ use horizon_client::{
 };
 
 impl Game<'_> {
+    /// Applies the explicit Fabric HUD action-bar mapping on Horizon's game
+    /// thread. Java never mutates this state directly.
+    pub(super) fn apply_fabric_overlay_message(&mut self, message: String, animate: bool) {
+        self.titles
+            .set_overlay(Text::literal(message), animate);
+    }
+
     /// `Hud.extractOverlayMessage`: the action bar.
     pub(super) fn draw_overlay_message(&self, batch: &mut HudBatch, bar_height: i32) {
         let (w, h) = (batch.width as i32, batch.height as i32);

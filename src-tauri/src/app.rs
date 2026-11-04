@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
@@ -14,13 +14,13 @@ use crate::database::Database;
 use crate::downloads::{self, DownloadProgress, ProgressSink, RemoteMinecraftVersion};
 use crate::horizon::{self, HorizonEngineStatus, HorizonMod};
 use crate::java;
-use crate::launch::{build_launch_plan, LaunchRequest};
+use crate::launch::{build_launch_plan, LaunchPlan, LaunchRequest};
 use crate::loaders::{self, InstalledLoaderProfile, LoaderVersion};
 use crate::minecraft;
 use crate::mods::{self, ModDownloadProgress};
 use crate::models::{
-    Instance, InstanceEngine, JavaRuntime, LaunchExitEvent, LaunchLogEvent, LaunchStarted,
-    MinecraftInstallation, OfflineProfile,
+    Instance, InstanceEngine, JavaRuntime, LaunchExitEvent, LaunchLogEvent, LaunchProfile,
+    LaunchStarted, MicrosoftAccount, MinecraftInstallation, OfflineProfile, PlaytimeSummary,
 };
 
 struct AppState {
@@ -32,6 +32,30 @@ struct AppState {
 #[tauri::command]
 fn list_instances(state: State<'_, AppState>) -> std::result::Result<Vec<Instance>, String> {
     state.database.list_instances().map_err(display_error)
+}
+
+#[tauri::command]
+fn get_playtime_tracking_enabled(state: State<'_, AppState>) -> std::result::Result<bool, String> {
+    state.database.setting("playtime_tracking_enabled")
+        .map(|value| value.as_deref() == Some("true"))
+        .map_err(display_error)
+}
+
+#[tauri::command]
+fn set_playtime_tracking_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    state.database.set_playtime_tracking_enabled(enabled).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_playtime_summary(
+    start_at: i64,
+    end_at: i64,
+    state: State<'_, AppState>,
+) -> std::result::Result<PlaytimeSummary, String> {
+    state.database.playtime_summary(start_at, end_at).map_err(display_error)
 }
 
 #[tauri::command]
@@ -58,6 +82,27 @@ fn horizon_runtime_path(app: &AppHandle) -> std::result::Result<PathBuf, String>
         return Ok(development);
     }
     Err("The built-in Horizon engine is missing. Rebuild OpnLauncher so its Horizon runtime is included.".to_owned())
+}
+
+fn horizon_fabric_bridge_path(app: &AppHandle) -> std::result::Result<PathBuf, String> {
+    let development = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("binaries")
+        .join("horizon-fabric-bridge.jar");
+    if cfg!(debug_assertions) && development.is_file() {
+        return Ok(development);
+    }
+    let bundled = app
+        .path()
+        .resource_dir()
+        .map_err(display_error)?
+        .join("horizon/horizon-fabric-bridge.jar");
+    if bundled.is_file() {
+        return Ok(bundled);
+    }
+    if development.is_file() {
+        return Ok(development);
+    }
+    Err("The experimental Fabric bridge helper is missing. Rebuild OpnLauncher so its Fabric bridge is included.".to_owned())
 }
 
 fn horizon_source_root(app: &AppHandle) -> std::result::Result<PathBuf, String> {
@@ -90,6 +135,252 @@ fn horizon_source_root(app: &AppHandle) -> std::result::Result<PathBuf, String> 
         return Ok(development);
     }
     Err("Horizon's bundled resource-preparation sources are missing from this OpnLauncher build.".to_owned())
+}
+
+fn horizon_fabric_game_directory(instance: &Instance, create: bool) -> std::result::Result<PathBuf, String> {
+    if instance.engine != InstanceEngine::Horizon {
+        return Err("the isolated Fabric runtime is only available for Horizon profiles".to_owned());
+    }
+    let instance_root = fs::canonicalize(&instance.game_dir).map_err(display_error)?;
+    if !instance_root.is_dir() {
+        return Err("the Horizon profile folder is not a directory".to_owned());
+    }
+    let private_root = instance_root.join(".opnlauncher");
+    match fs::symlink_metadata(&private_root) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err("the Horizon profile's private folder is not a regular directory".to_owned());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create => {
+            fs::create_dir(&private_root).map_err(display_error)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("install the optional Java Fabric runtime for this profile first".to_owned());
+        }
+        Err(error) => return Err(display_error(error)),
+    }
+    let runtime = private_root.join("fabric-java");
+    match fs::symlink_metadata(&runtime) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err("the isolated Fabric game folder is not a regular directory".to_owned())
+        }
+        Ok(_) => Ok(runtime),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create => {
+            fs::create_dir(&runtime).map_err(display_error)?;
+            Ok(runtime)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err("install the optional Java Fabric runtime for this profile first".to_owned())
+        }
+        Err(error) => Err(display_error(error)),
+    }
+}
+
+fn configure_horizon_fabric_code_bridge(
+    instance: &Instance,
+    profile: &LaunchProfile,
+    state: &AppState,
+    app: &AppHandle,
+    command: &mut Command,
+) -> std::result::Result<Option<String>, String> {
+    let bridge = horizon::fabric_bridge_status(instance).map_err(display_error)?;
+    if !bridge.settings.code_enabled {
+        return Ok(None);
+    }
+
+    let runtime_dir = horizon_fabric_game_directory(instance, false)?;
+    let version_id = instance
+        .horizon_fabric_version_id
+        .as_deref()
+        .ok_or_else(|| {
+            "install a Fabric Loader profile in Horizon settings before using the code bridge"
+                .to_owned()
+        })?;
+    let java_path = instance
+        .horizon_fabric_java_path
+        .as_deref()
+        .ok_or_else(|| "select a Java runtime for the Horizon Fabric code bridge".to_owned())?;
+    let java_runtime = java::inspect_runtime(Path::new(java_path)).map_err(display_error)?;
+    if java_runtime.major_version < 25 {
+        return Err(format!(
+            "the Horizon Fabric code bridge needs Java 25 or newer; selected Java is {}",
+            java_runtime.major_version
+        ));
+    }
+    if !loaders::installed_profiles(&runtime_dir)
+        .map_err(display_error)?
+        .iter()
+        .any(|installed| {
+            installed.version_id == version_id
+                && installed.minecraft_version == "26.3"
+                && installed.loader == "fabric"
+        })
+    {
+        return Err("the isolated Fabric profile is incomplete; reinstall Fabric from Horizon settings".to_owned());
+    }
+
+    let mut fabric_instance = instance.clone();
+    fabric_instance.game_dir = runtime_dir.to_string_lossy().into_owned();
+    fabric_instance.version_id = Some(version_id.to_owned());
+    fabric_instance.java_path = Some(java_path.to_owned());
+    let plan = build_launch_plan(LaunchRequest {
+        instance: &fabric_instance,
+        profile,
+        java_path: Path::new(java_path),
+        native_cache: &state.data_dir.join("cache/natives"),
+        launcher_version: env!("CARGO_PKG_VERSION"),
+        prepare_natives: false,
+    }).map_err(display_error)?;
+
+    let class_path_index = plan
+        .arguments
+        .iter()
+        .position(|argument| argument == "-cp" || argument == "-classpath")
+        .ok_or_else(|| "the installed Fabric launch profile has no Java class path".to_owned())?;
+    let class_path = plan.arguments.get(class_path_index + 1)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "the installed Fabric launch profile has an empty Java class path".to_owned())?;
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    let game_jar = class_path
+        .split(separator)
+        .rev()
+        .map(Path::new)
+        .find(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("jar"))
+        })
+        .ok_or_else(|| {
+            "the installed Minecraft 26.3 client JAR is missing from the Fabric class path"
+                .to_owned()
+        })?;
+    let canonical_game_jar = game_jar.canonicalize().map_err(display_error)?;
+    let bridge_class_path = class_path
+        .split(separator)
+        .filter(|entry| !entry.is_empty())
+        .filter(|entry| {
+            let normalized = entry.replace('\\', "/").to_ascii_lowercase();
+            !normalized.contains("/net/fabricmc/fabric-api/")
+                && Path::new(entry)
+                    .canonicalize()
+                    .map(|path| path != canonical_game_jar)
+                    .unwrap_or(true)
+        })
+        .collect::<Vec<_>>()
+        .join(&separator.to_string());
+    if bridge_class_path.is_empty() {
+        return Err("the Fabric helper class path has no loader libraries after removing the Java game and Fabric API JARs".to_owned());
+    }
+    let mods_dir = horizon::prepare_fabric_code_bridge(instance).map_err(display_error)?;
+    let helper_jar = horizon_fabric_bridge_path(app)?;
+    let jvm_arguments = plan.arguments[..class_path_index]
+        .iter()
+        .filter(|argument| !argument.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+
+    command
+        .env("OPNLAUNCHER_FABRIC_BRIDGE_JAVA", java_path)
+        .env("OPNLAUNCHER_FABRIC_BRIDGE_CLASS_PATH", bridge_class_path)
+        .env("OPNLAUNCHER_FABRIC_BRIDGE_JAR", helper_jar)
+        .env("OPNLAUNCHER_FABRIC_BRIDGE_MODS_DIR", mods_dir)
+        .env("OPNLAUNCHER_FABRIC_BRIDGE_GAME_DIR", runtime_dir)
+        .env("OPNLAUNCHER_FABRIC_BRIDGE_JVM_ARG_COUNT", jvm_arguments.len().to_string());
+    for (index, argument) in jvm_arguments.iter().enumerate() {
+        command.env(format!("OPNLAUNCHER_FABRIC_BRIDGE_JVM_ARG_{index}"), argument);
+    }
+
+    Ok(Some(format!(
+        "Experimental Fabric bridge armed for profile {version_id}. {} mod JAR(s) passed the current API allowlist; {} unsupported JAR(s) were excluded. Original mod files are unchanged. Player/input snapshots and bounded sprint, velocity, look, chat, and HUD actions are mapped. Mixins and rendering APIs, including Sodium, are unsupported.",
+        bridge.code_mods.iter().filter(|item| item.state == "supported").count(),
+        bridge.code_mods.iter().filter(|item| item.state == "unsupported" || item.state == "invalid").count(),
+    )))
+}
+
+fn copy_existing_horizon_mods(instance: &Instance, runtime_dir: &Path) -> std::result::Result<u32, String> {
+    const MAX_MOD_FILE_BYTES: u64 = 768 * 1024 * 1024;
+    const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+    const MAX_FILES: usize = 512;
+
+    let profile_root = fs::canonicalize(&instance.game_dir).map_err(display_error)?;
+    let source_dir = profile_root.join("mods");
+    let source_metadata = match fs::symlink_metadata(&source_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err("the Horizon profile's existing mods folder is not a regular directory".to_owned());
+        }
+        Ok(_) => source_dir,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(display_error(error)),
+    };
+    let destination_dir = runtime_dir.join("mods");
+    match fs::symlink_metadata(&destination_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err("the isolated Fabric mods folder is not a regular directory".to_owned());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&destination_dir).map_err(display_error)?;
+        }
+        Err(error) => return Err(display_error(error)),
+    }
+
+    let mut copied = 0u32;
+    let mut total_bytes = 0u64;
+    for entry in fs::read_dir(source_metadata).map_err(display_error)? {
+        let entry = entry.map_err(display_error)?;
+        let entry_type = entry.file_type().map_err(display_error)?;
+        if !entry_type.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let lower = file_name.to_string_lossy().to_ascii_lowercase();
+        if !(lower.ends_with(".jar") || lower.ends_with(".jar.disabled")) {
+            continue;
+        }
+        let metadata = entry.metadata().map_err(display_error)?;
+        if metadata.len() > MAX_MOD_FILE_BYTES {
+            return Err(format!("existing mod {} is larger than the safe copy limit", file_name.to_string_lossy()));
+        }
+        if copied as usize >= MAX_FILES || total_bytes.saturating_add(metadata.len()) > MAX_TOTAL_BYTES {
+            return Err("existing Horizon mods exceed the safe copy limits for the Java runtime".to_owned());
+        }
+        let destination = destination_dir.join(&file_name);
+        let mut output = match fs::OpenOptions::new().write(true).create_new(true).open(&destination) {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(display_error(error)),
+        };
+        let copy_result = (|| {
+            let mut source = File::open(entry.path()).map_err(display_error)?;
+            let copied_bytes = std::io::copy(&mut source, &mut output).map_err(display_error)?;
+            if copied_bytes != metadata.len() {
+                return Err("an existing mod changed while it was being copied".to_owned());
+            }
+            output.flush().map_err(display_error)?;
+            Ok(())
+        })();
+        if let Err(error) = copy_result {
+            let _ = fs::remove_file(&destination);
+            return Err(error);
+        }
+        copied += 1;
+        total_bytes = total_bytes.saturating_add(metadata.len());
+    }
+    Ok(copied)
+}
+
+fn set_launch_argument(arguments: &mut Vec<String>, name: &str, value: String) {
+    if let Some(index) = arguments.iter().position(|argument| argument == name) {
+        if let Some(argument) = arguments.get_mut(index + 1) {
+            *argument = value;
+        } else {
+            arguments.push(value);
+        }
+    } else {
+        arguments.push(name.to_owned());
+        arguments.push(value);
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -531,6 +822,123 @@ async fn install_instance_setup(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+async fn install_horizon_fabric_setup(
+    instance_id: String,
+    loader_version: String,
+    java_path: String,
+    download_id: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> std::result::Result<Instance, String> {
+    Uuid::parse_str(&download_id).map_err(|_| "download identifier is invalid".to_owned())?;
+    let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
+    if instance.engine != InstanceEngine::Horizon {
+        return Err("choose a Horizon profile before installing its Fabric compatibility runtime".to_owned());
+    }
+    let java = java::inspect_runtime(Path::new(&java_path)).map_err(display_error)?;
+    if java.major_version < 25 {
+        return Err(format!("Minecraft 26.3 Fabric requires Java 25 or newer; selected Java {}", java.major_version));
+    }
+    if !loaders::fabric_versions("26.3").map_err(display_error)?.iter().any(|version| version.version == loader_version) {
+        return Err("the selected Fabric Loader build is not compatible with Minecraft 26.3".to_owned());
+    }
+    let runtime = horizon_fabric_game_directory(&instance, true)?;
+    let runtime_was_enabled = instance.horizon_fabric_enabled;
+
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let active_downloads = Arc::clone(&state.active_downloads);
+    {
+        let mut active = active_downloads.lock().map_err(display_error)?;
+        if active.contains_key(&download_id) {
+            return Err("a download with this identifier is already active".to_owned());
+        }
+        active.insert(download_id.clone(), Arc::clone(&cancellation));
+    }
+    let database = Arc::clone(&state.database);
+    let worker_download_id = download_id.clone();
+    let worker_instance_id = instance_id.clone();
+    let worker_loader_version = loader_version.clone();
+    let worker_java_path = java.path.clone();
+    let worker_runtime_enabled = runtime_was_enabled;
+    let progress_app = app.clone();
+    let phase_app = app.clone();
+    let progress_sink: ProgressSink = Arc::new(move |progress: DownloadProgress| {
+        let _ = progress_app.emit("download-progress", progress);
+    });
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let install = (|| {
+            downloads::install_version_for_instance(
+                "26.3",
+                &runtime,
+                &worker_download_id,
+                Arc::clone(&cancellation),
+                progress_sink,
+            )?;
+            if cancellation.load(Ordering::Relaxed) {
+                return Err(crate::error::LauncherError::Unsupported("installation cancelled".to_owned()));
+            }
+            let _ = phase_app.emit("download-progress", DownloadProgress {
+                download_id: worker_download_id.clone(),
+                version_id: "26.3".to_owned(),
+                phase: "Installing Fabric Loader".to_owned(),
+                current_file: String::new(),
+                completed_files: 0,
+                total_files: 0,
+                downloaded_bytes: 0,
+                total_bytes: 0,
+            });
+            let profile_id = loaders::install_fabric(&runtime, "26.3", &worker_loader_version)?;
+            copy_existing_horizon_mods(&instance, &runtime).map_err(crate::error::LauncherError::Unsupported)?;
+            database.set_horizon_fabric_runtime(
+                &worker_instance_id,
+                Some(&profile_id),
+                Some(&worker_java_path),
+                worker_runtime_enabled,
+            )?;
+            database.get_instance(&worker_instance_id)
+        })();
+        install
+    }).await;
+    if let Ok(mut active) = active_downloads.lock() {
+        active.remove(&download_id);
+    }
+    result.map_err(display_error)?.map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn set_horizon_fabric_runtime_enabled(
+    instance_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
+    if instance.engine != InstanceEngine::Horizon {
+        return Err("the Fabric compatibility runtime is only available for Horizon profiles".to_owned());
+    }
+    if enabled {
+        let _ = horizon_fabric_game_directory(&instance, false)?;
+        let version_id = instance.horizon_fabric_version_id.as_deref()
+            .ok_or_else(|| "install the isolated Fabric runtime before enabling it".to_owned())?;
+        let java_path = instance.horizon_fabric_java_path.as_deref()
+            .ok_or_else(|| "choose a Java runtime for the Fabric compatibility mode".to_owned())?;
+        let java = java::inspect_runtime(Path::new(java_path)).map_err(display_error)?;
+        if java.major_version < 25 {
+            return Err("Minecraft 26.3 Fabric needs Java 25 or newer".to_owned());
+        }
+        let runtime = horizon_fabric_game_directory(&instance, false)?;
+        if loaders::base_game_version(&runtime, version_id).map_err(display_error)? != "26.3" {
+            return Err("the installed Fabric profile is not based on Minecraft 26.3".to_owned());
+        }
+        if !loaders::installed_profiles(&runtime).map_err(display_error)?.iter().any(|profile| {
+            profile.version_id == version_id && profile.minecraft_version == "26.3" && profile.loader == "fabric"
+        }) {
+            return Err("the isolated Java profile does not contain a complete Fabric installation".to_owned());
+        }
+    }
+    state.database.set_horizon_fabric_runtime_enabled(&instance_id, enabled).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn cancel_download(download_id: String, state: State<'_, AppState>) -> std::result::Result<(), String> {
     let active = state.active_downloads.lock().map_err(display_error)?;
     let cancellation = active
@@ -860,6 +1268,35 @@ fn list_horizon_mods(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn get_horizon_fabric_bridge_status(
+    instance_id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<horizon::HorizonFabricBridgeStatus, String> {
+    let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
+    horizon::fabric_bridge_status(&instance).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn set_horizon_fabric_bridge_enabled(
+    instance_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> std::result::Result<horizon::HorizonFabricBridgeSettings, String> {
+    let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
+    horizon::set_fabric_bridge_enabled(&instance, enabled).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn set_horizon_fabric_code_bridge_enabled(
+    instance_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> std::result::Result<horizon::HorizonFabricBridgeSettings, String> {
+    let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
+    horizon::set_fabric_code_bridge_enabled(&instance, enabled).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn install_horizon_mod(
     instance_id: String,
     source_path: String,
@@ -910,6 +1347,37 @@ fn forget_instance(
         return Err("confirm removal before forgetting this instance".to_owned());
     }
     state.database.delete_instance_record(&instance_id).map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn open_instance_folder(
+    instance_id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
+    let path = fs::canonicalize(&instance.game_dir).map_err(|error| {
+        format!("cannot open this instance folder: {error}")
+    })?;
+    if !path.is_dir() {
+        return Err("the instance game folder is not a directory".to_owned());
+    }
+
+    #[cfg(target_os = "linux")]
+    let mut command = Command::new("xdg-open");
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = Command::new("explorer.exe");
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    return Err("opening the file manager is not supported on this platform".to_owned());
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    {
+        command.arg(path).spawn().map_err(|error| {
+            format!("could not open the instance folder in the file manager: {error}")
+        })?;
+        Ok(())
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1061,6 +1529,73 @@ fn list_offline_profiles(
 }
 
 #[tauri::command]
+fn list_microsoft_accounts(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<MicrosoftAccount>, String> {
+    state.database.list_microsoft_accounts().map_err(display_error)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn add_microsoft_account(
+    client_id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<MicrosoftAccount, String> {
+    let database = Arc::clone(&state.database);
+    tauri::async_runtime::spawn_blocking(move || {
+        let client_id = client_id.trim().to_owned();
+        let (account, _) = crate::microsoft_auth::sign_in(&client_id)?;
+        if let Err(error) = database.set_setting("microsoft_client_id", &client_id) {
+            let _ = crate::microsoft_auth::remove_credentials(&account.id);
+            return Err(display_error(error));
+        }
+        if let Err(error) = database.save_microsoft_account(&account.name, &account.uuid) {
+            let _ = crate::microsoft_auth::remove_credentials(&account.id);
+            return Err(display_error(error));
+        }
+        database
+            .get_microsoft_account(&account.id)
+            .map_err(display_error)
+    })
+    .await
+    .map_err(|_| "Microsoft sign-in stopped unexpectedly.".to_owned())?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn remove_microsoft_account(
+    account_id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let account = state.database.get_microsoft_account(&account_id).map_err(display_error)?;
+    crate::microsoft_auth::remove_credentials(&account.id)?;
+    state.database.remove_microsoft_account(&account.id).map_err(display_error)
+}
+
+fn offline_launch_profile(profile: OfflineProfile) -> LaunchProfile {
+    LaunchProfile {
+        name: profile.name,
+        uuid: profile.uuid,
+        access_token: String::new(),
+        user_type: "legacy".to_owned(),
+        xuid: String::new(),
+        verified: false,
+    }
+}
+
+fn resolve_launch_profile(state: &AppState, profile_id: &str) -> std::result::Result<LaunchProfile, String> {
+    if profile_id.starts_with("microsoft:") {
+        let account = state.database.get_microsoft_account(profile_id).map_err(display_error)?;
+        let client_id = state.database.setting("microsoft_client_id")
+            .map_err(display_error)?
+            .ok_or_else(|| "Enter the Microsoft app registration client ID on the Accounts page, then sign in again.".to_owned())?;
+        crate::microsoft_auth::refresh(&account, &client_id)
+    } else {
+        state.database.get_offline_profile(profile_id)
+            .map(offline_launch_profile)
+            .map_err(display_error)
+    }
+}
+
+#[tauri::command]
 fn create_offline_profile(
     name: String,
     state: State<'_, AppState>,
@@ -1071,24 +1606,102 @@ fn create_offline_profile(
     state.database.create_offline_profile(&name).map_err(display_error)
 }
 
+async fn build_launch_plan_with_repair(
+    instance: Instance,
+    profile: LaunchProfile,
+    java_path: PathBuf,
+    native_cache: PathBuf,
+    download_id: String,
+    active_downloads: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    app: AppHandle,
+) -> std::result::Result<LaunchPlan, String> {
+    Uuid::parse_str(&download_id).map_err(|_| "download identifier is invalid".to_owned())?;
+    let cancellation = Arc::new(AtomicBool::new(false));
+    {
+        let mut active = active_downloads.lock().map_err(display_error)?;
+        if active.contains_key(&download_id) {
+            return Err("a download with this identifier is already active".to_owned());
+        }
+        active.insert(download_id.clone(), Arc::clone(&cancellation));
+    }
+    let version_id = instance.version_id.clone().unwrap_or_else(|| "Minecraft".to_owned());
+    let _ = app.emit("download-progress", DownloadProgress {
+        download_id: download_id.clone(),
+        version_id: version_id.clone(),
+        phase: "Checking Minecraft files".to_owned(),
+        current_file: String::new(),
+        completed_files: 0,
+        total_files: 0,
+        downloaded_bytes: 0,
+        total_bytes: 0,
+    });
+    let progress_app = app.clone();
+    let progress_sink: ProgressSink = Arc::new(move |progress: DownloadProgress| {
+        let _ = progress_app.emit("download-progress", progress);
+    });
+    let worker_download_id = download_id.clone();
+    let worker_cancel = Arc::clone(&cancellation);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let selected_version = instance.version_id.as_deref().ok_or_else(|| {
+            crate::error::LauncherError::InvalidInput("select a Minecraft version first".to_owned())
+        })?;
+        let missing = crate::launch::missing_minecraft_files(Path::new(&instance.game_dir), selected_version)?;
+        let repaired = !missing.is_empty();
+        if repaired {
+            downloads::repair_missing_instance_files(
+                selected_version,
+                Path::new(&instance.game_dir),
+                &worker_download_id,
+                Arc::clone(&worker_cancel),
+                progress_sink,
+            )?;
+        }
+        if worker_cancel.load(Ordering::Relaxed) {
+            return Err(crate::error::LauncherError::Unsupported("launch file repair cancelled".to_owned()));
+        }
+        let plan = build_launch_plan(LaunchRequest {
+            instance: &instance,
+            profile: &profile,
+            java_path: &java_path,
+            native_cache: &native_cache,
+            launcher_version: env!("CARGO_PKG_VERSION"),
+            prepare_natives: true,
+        })?;
+        Ok((plan, repaired))
+    }).await;
+    if let Ok(mut active) = active_downloads.lock() {
+        active.remove(&download_id);
+    }
+    let (plan, repaired) = result.map_err(display_error)?.map_err(display_error)?;
+    let _ = app.emit("download-progress", DownloadProgress {
+        download_id,
+        version_id,
+        phase: if repaired { "Installation complete" } else { "Minecraft files checked" }.to_owned(),
+        current_file: String::new(),
+        completed_files: u64::from(repaired),
+        total_files: u64::from(repaired),
+        downloaded_bytes: 0,
+        total_bytes: 0,
+    });
+    Ok(plan)
+}
+
 #[tauri::command(rename_all = "camelCase")]
-fn launch_instance(
+async fn launch_instance(
     instance_id: String,
     profile_id: String,
+    download_id: String,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> std::result::Result<LaunchStarted, String> {
-    if !offline_profiles_enabled() {
-        return Err("Minecraft launching requires an authenticated account in this build".to_owned());
+    if !profile_id.starts_with("microsoft:") && !offline_profiles_enabled() {
+        return Err("Development-only local profiles are disabled in this build. Choose a Microsoft account.".to_owned());
     }
     let instance = state.database.get_instance(&instance_id).map_err(display_error)?;
     if instance.engine != InstanceEngine::Minecraft {
         return Err("Horizon profiles use the Horizon launch pipeline".to_owned());
     }
-    let profile = state
-        .database
-        .get_offline_profile(&profile_id)
-        .map_err(display_error)?;
+    let profile = resolve_launch_profile(&state, &profile_id)?;
     let discovered = java::discover_runtimes();
     let java_path = instance
         .java_path
@@ -1097,14 +1710,15 @@ fn launch_instance(
         .or_else(|| discovered.first().map(|runtime| PathBuf::from(&runtime.path)))
         .ok_or_else(|| "No Java runtime was found. Install Java and set JAVA_HOME.".to_owned())?;
     let native_cache = state.data_dir.join("cache").join("natives");
-    let plan = build_launch_plan(LaunchRequest {
-        instance: &instance,
-        profile: &profile,
-        java_path: &java_path,
-        native_cache: &native_cache,
-        launcher_version: env!("CARGO_PKG_VERSION"),
-    })
-    .map_err(display_error)?;
+    let plan = build_launch_plan_with_repair(
+        instance.clone(),
+        profile.clone(),
+        java_path.clone(),
+        native_cache,
+        download_id,
+        Arc::clone(&state.active_downloads),
+        app.clone(),
+    ).await?;
     let mut command = Command::new(&plan.executable);
     command.args(&plan.arguments).current_dir(&plan.working_directory);
     start_game_process(
@@ -1112,6 +1726,8 @@ fn launch_instance(
         &instance,
         &state,
         &app,
+        plan.native_directory.clone(),
+        &[profile.access_token.as_str()],
         &format!(
             "Starting {} ({}) with {}",
             instance.name,
@@ -1122,12 +1738,13 @@ fn launch_instance(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-fn launch_horizon_instance(
+async fn launch_horizon_instance(
     instance_id: String,
     profile_id: String,
     width: u32,
     height: u32,
     fullscreen: bool,
+    download_id: String,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> std::result::Result<LaunchStarted, String> {
@@ -1138,7 +1755,63 @@ fn launch_horizon_instance(
     if instance.engine != InstanceEngine::Horizon {
         return Err("select a Horizon instance before launching Horizon".to_owned());
     }
-    let profile = state.database.get_offline_profile(&profile_id).map_err(display_error)?;
+    if profile_id.starts_with("microsoft:") {
+        return Err("Horizon currently uses local test profiles. Select a local account for Horizon; Microsoft sign-in is used for Minecraft Java launches.".to_owned());
+    }
+    let offline_profile = state.database.get_offline_profile(&profile_id).map_err(display_error)?;
+    let profile = offline_launch_profile(offline_profile.clone());
+    if instance.horizon_fabric_enabled {
+        let runtime_dir = horizon_fabric_game_directory(&instance, false)?;
+        let version_id = instance.horizon_fabric_version_id.as_deref()
+            .ok_or_else(|| "install the isolated Fabric runtime before launching this profile".to_owned())?;
+        let java_path = instance.horizon_fabric_java_path.as_deref()
+            .ok_or_else(|| "choose a Java runtime for this profile's Fabric compatibility mode".to_owned())?;
+        let java_runtime = java::inspect_runtime(Path::new(java_path)).map_err(display_error)?;
+        if java_runtime.major_version < 25 {
+            return Err(format!("Minecraft 26.3 Fabric needs Java 25 or newer; selected Java is {}", java_runtime.major_version));
+        }
+        let installed = loaders::installed_profiles(&runtime_dir).map_err(display_error)?;
+        if !installed.iter().any(|installed| {
+            installed.version_id == version_id
+                && installed.minecraft_version == "26.3"
+                && installed.loader == "fabric"
+        }) {
+            return Err("the isolated Fabric profile is incomplete. Reinstall Fabric from Horizon settings.".to_owned());
+        }
+        let mut java_instance = instance.clone();
+        java_instance.game_dir = runtime_dir.to_string_lossy().into_owned();
+        java_instance.version_id = Some(version_id.to_owned());
+        java_instance.java_path = Some(java_path.to_owned());
+        let mut plan = build_launch_plan_with_repair(
+            java_instance,
+            profile.clone(),
+            PathBuf::from(java_path),
+            state.data_dir.join("cache/natives"),
+            download_id,
+            Arc::clone(&state.active_downloads),
+            app.clone(),
+        ).await?;
+        set_launch_argument(&mut plan.arguments, "--width", width.to_string());
+        set_launch_argument(&mut plan.arguments, "--height", height.to_string());
+        plan.arguments.retain(|argument| argument != "--fullscreen");
+        if fullscreen {
+            plan.arguments.push("--fullscreen".to_owned());
+        }
+        let mut command = Command::new(&plan.executable);
+        command.args(&plan.arguments).current_dir(&plan.working_directory);
+        return start_game_process(
+            command,
+            &instance,
+            &state,
+            &app,
+            plan.native_directory.clone(),
+            &[],
+            &format!(
+                "Starting {} with the optional Java Minecraft + Fabric runtime ({}) and local profile {}. The Rust Horizon engine is unchanged and is not used for this launch.",
+                instance.name, version_id, profile.name
+            ),
+        );
+    }
     let client_path = horizon_runtime_path(&app)?;
     let resources_path = state.data_dir.join("horizon/resources");
     let source_root = horizon_source_root(&app)?;
@@ -1146,9 +1819,10 @@ fn launch_horizon_instance(
     if !missing.is_empty() {
         return Err(format!("Horizon resources are not ready: {}", missing.join("; ")));
     }
-    let command = horizon::offline_command(
+    let bridge_summary = horizon::prepare_fabric_bridge(&instance).map_err(display_error)?;
+    let mut command = horizon::offline_command(
         &instance,
-        &profile,
+        &offline_profile,
         &client_path,
         &resources_path,
         width,
@@ -1156,15 +1830,26 @@ fn launch_horizon_instance(
         fullscreen,
     )
     .map_err(display_error)?;
+    let code_bridge_summary = configure_horizon_fabric_code_bridge(
+        &instance,
+        &profile,
+        &state,
+        &app,
+        &mut command,
+    )?;
+    let code_bridge_summary = code_bridge_summary.unwrap_or_else(|| "Experimental Fabric code bridge is off.".to_owned());
     start_game_process(
         command,
         &instance,
         &state,
         &app,
+        None,
+        &[],
         &format!(
-            "Starting Horizon {} offline with local profile {} (telemetry disabled)",
+            "Starting Horizon {} offline with local profile {} (telemetry disabled)\n{}",
             instance.version_id.as_deref().unwrap_or("unknown"),
-            profile.name
+            profile.name,
+            format!("{bridge_summary}\n{code_bridge_summary}")
         ),
     )
 }
@@ -1174,6 +1859,8 @@ fn start_game_process(
     instance: &Instance,
     state: &AppState,
     app: &AppHandle,
+    native_directory: Option<PathBuf>,
+    secrets_to_redact: &[&str],
     start_message: &str,
 ) -> std::result::Result<LaunchStarted, String> {
     let logs_dir = state.data_dir.join("logs");
@@ -1183,11 +1870,19 @@ fn start_game_process(
     let log_file = Arc::new(Mutex::new(log_file));
     append_log(&log_file, &format!("{start_message}\n")).map_err(display_error)?;
 
-    let mut child = command
+    let mut child = match command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("could not start game: {error}"))?;
+    {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(path) = native_directory.as_deref() {
+                let _ = fs::remove_dir_all(path);
+            }
+            return Err(format!("could not start game: {error}"));
+        }
+    };
     let pid = child.id();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1196,6 +1891,21 @@ fn start_game_process(
     let thread_instance_id = instance.id.clone();
     let thread_log_path = log_path.clone();
     let app_for_output = app.clone();
+    let cleanup_native_directory = native_directory;
+    let playtime_session_id = match state.database.start_play_session(&instance.id) {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            let _ = append_log(&log_file, &format!("Playtime tracking could not start: {error}\n"));
+            None
+        }
+    };
+    let secrets_to_redact = Arc::new(
+        secrets_to_redact
+            .iter()
+            .filter(|secret| secret.len() >= 8)
+            .map(|secret| (*secret).to_owned())
+            .collect::<Vec<_>>(),
+    );
     let mut readers = Vec::new();
     if let Some(stdout) = stdout {
         readers.push(stream_output(
@@ -1204,6 +1914,7 @@ fn start_game_process(
             instance.id.clone(),
             log_file.clone(),
             app_for_output.clone(),
+            Arc::clone(&secrets_to_redact),
         ));
     }
     if let Some(stderr) = stderr {
@@ -1213,12 +1924,40 @@ fn start_game_process(
             instance.id.clone(),
             log_file.clone(),
             app_for_output,
+            Arc::clone(&secrets_to_redact),
         ));
     }
     std::thread::spawn(move || {
-        let status = child.wait();
+        let status = if playtime_session_id.is_some() {
+            let mut last_playtime_checkpoint = Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break Ok(status),
+                    Ok(None) => {
+                        if last_playtime_checkpoint.elapsed() >= Duration::from_secs(10) {
+                            if let (Some(database), Some(session_id)) = (&database, &playtime_session_id) {
+                                let _ = database.update_play_session(session_id);
+                            }
+                            last_playtime_checkpoint = Instant::now();
+                        }
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                    Err(error) => break Err(error),
+                }
+            }
+        } else {
+            child.wait()
+        };
         for reader in readers {
             let _ = reader.join();
+        }
+        if let Some(path) = cleanup_native_directory {
+            if let Err(error) = fs::remove_dir_all(&path) {
+                let _ = append_log(
+                    &log_file,
+                    &format!("Could not remove temporary native library cache: {error}\n"),
+                );
+            }
         }
         let (success, code) = match status {
             Ok(status) => (status.success(), status.code()),
@@ -1236,6 +1975,11 @@ fn start_game_process(
         let _ = app_for_wait.emit("launch-exit", event);
         if let Some(database) = database {
             let _ = database.touch_instance(&thread_instance_id);
+            if let Some(session_id) = playtime_session_id {
+                if let Err(error) = database.finish_play_session(&session_id) {
+                    let _ = append_log(&log_file, &format!("Playtime tracking could not finish: {error}\n"));
+                }
+            }
         }
     });
 
@@ -1252,7 +1996,8 @@ fn offline_profiles_enabled() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{import_horizon_sound_assets, offline_profiles_enabled};
+    use super::{copy_existing_horizon_mods, import_horizon_sound_assets, offline_profiles_enabled, redact_sensitive_output, set_launch_argument};
+    use crate::models::InstanceEngine;
     use sha1::{Digest, Sha1};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1265,6 +2010,54 @@ mod tests {
     fn write_fixture_file(path: &Path, bytes: &[u8]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn copies_existing_horizon_jars_without_replacing_or_removing_sources() {
+        let test_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target")
+            .join(format!("horizon-fabric-copy-test-{}", Uuid::new_v4()));
+        let source_mods = test_root.join("mods");
+        let runtime_dir = test_root.join(".opnlauncher/fabric-java");
+        let destination_mods = runtime_dir.join("mods");
+        fs::create_dir_all(&source_mods).unwrap();
+        fs::create_dir_all(&destination_mods).unwrap();
+        fs::write(source_mods.join("fabric-api.jar"), b"source api bytes").unwrap();
+        fs::write(source_mods.join("sodium.jar.disabled"), b"disabled sodium bytes").unwrap();
+        fs::write(source_mods.join("notes.txt"), b"not a mod").unwrap();
+        fs::write(destination_mods.join("fabric-api.jar"), b"existing destination").unwrap();
+
+        let instance = crate::models::Instance {
+            id: Uuid::new_v4().to_string(),
+            name: "Fabric copy test".to_owned(),
+            engine: InstanceEngine::Horizon,
+            game_dir: test_root.to_string_lossy().into_owned(),
+            version_id: Some("26.3".to_owned()),
+            java_path: None,
+            horizon_fabric_enabled: false,
+            horizon_fabric_version_id: None,
+            horizon_fabric_java_path: None,
+            memory_mb: 2048,
+            created_at: 0,
+            last_played_at: None,
+        };
+
+        assert_eq!(copy_existing_horizon_mods(&instance, &runtime_dir).unwrap(), 1);
+        assert_eq!(fs::read(source_mods.join("fabric-api.jar")).unwrap(), b"source api bytes");
+        assert_eq!(fs::read(destination_mods.join("fabric-api.jar")).unwrap(), b"existing destination");
+        assert_eq!(fs::read(destination_mods.join("sodium.jar.disabled")).unwrap(), b"disabled sodium bytes");
+        assert!(!destination_mods.join("notes.txt").exists());
+        fs::remove_dir_all(test_root).unwrap();
+    }
+
+    #[test]
+    fn updates_java_window_arguments_for_the_selected_horizon_profile() {
+        let mut arguments = vec!["--width".to_owned(), "1280".to_owned(), "--height".to_owned(), "720".to_owned()];
+        set_launch_argument(&mut arguments, "--width", "1600".to_owned());
+        set_launch_argument(&mut arguments, "--height", "900".to_owned());
+        assert_eq!(arguments, ["--width", "1600", "--height", "900"]);
+        set_launch_argument(&mut arguments, "--fullscreen", "true".to_owned());
+        assert!(arguments.windows(2).any(|pair| pair == ["--fullscreen", "true"]));
     }
 
     #[test]
@@ -1362,6 +2155,16 @@ mod tests {
         assert!(cfg!(feature = "dev-offline-profiles"));
         assert!(offline_profiles_enabled());
     }
+
+    #[test]
+    fn launch_output_redacts_minecraft_access_tokens() {
+        let secrets = vec!["minecraft-session-token-value".to_owned()];
+        let output = redact_sensitive_output(
+            "Authentication token: minecraft-session-token-value",
+            &secrets,
+        );
+        assert_eq!(output, "Authentication token: [REDACTED]");
+    }
 }
 
 fn stream_output<R: Read + Send + 'static>(
@@ -1370,6 +2173,7 @@ fn stream_output<R: Read + Send + 'static>(
     instance_id: String,
     log_file: Arc<Mutex<File>>,
     app: AppHandle,
+    secrets_to_redact: Arc<Vec<String>>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(reader);
@@ -1379,22 +2183,29 @@ fn stream_output<R: Read + Send + 'static>(
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
-                    if line.len() > 8192 {
-                        line.truncate(8192);
+                    let mut safe_line = redact_sensitive_output(&line, &secrets_to_redact);
+                    if safe_line.len() > 8192 {
+                        safe_line.truncate(8192);
                     }
-                    let _ = append_log(&log_file, &format!("[{stream}] {line}"));
+                    let _ = append_log(&log_file, &format!("[{stream}] {safe_line}"));
                     let _ = app.emit(
                         "launch-log",
                         LaunchLogEvent {
                             instance_id: instance_id.clone(),
                             stream: stream.to_owned(),
-                            text: line.trim_end().to_owned(),
+                            text: safe_line.trim_end().to_owned(),
                         },
                     );
                 }
             }
         }
     })
+}
+
+fn redact_sensitive_output(text: &str, secrets: &[String]) -> String {
+    secrets
+        .iter()
+        .fold(text.to_owned(), |output, secret| output.replace(secret, "[REDACTED]"))
 }
 
 fn append_log(file: &Arc<Mutex<File>>, text: &str) -> std::io::Result<()> {
@@ -1438,6 +2249,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_instances,
+            get_playtime_tracking_enabled,
+            set_playtime_tracking_enabled,
+            get_playtime_summary,
             scan_installations,
             inspect_horizon_engine,
             list_official_versions,
@@ -1456,6 +2270,7 @@ pub fn run() {
             switch_mod_version,
             install_minecraft_version,
             install_instance_setup,
+            install_horizon_fabric_setup,
             cancel_download,
             inspect_installation,
             register_installation,
@@ -1463,11 +2278,16 @@ pub fn run() {
             create_horizon_instance,
             prepare_horizon_resources,
             list_horizon_mods,
+            get_horizon_fabric_bridge_status,
+            set_horizon_fabric_bridge_enabled,
+            set_horizon_fabric_code_bridge_enabled,
+            set_horizon_fabric_runtime_enabled,
             install_horizon_mod,
             set_horizon_mod_enabled,
             remove_horizon_mod,
             rename_instance,
             forget_instance,
+            open_instance_folder,
             set_instance_java,
             set_instance_memory,
             list_java_runtimes,
@@ -1479,6 +2299,9 @@ pub fn run() {
             set_instance_version,
             list_offline_profiles,
             create_offline_profile,
+            list_microsoft_accounts,
+            add_microsoft_account,
+            remove_microsoft_account,
             launch_instance,
             launch_horizon_instance,
         ])

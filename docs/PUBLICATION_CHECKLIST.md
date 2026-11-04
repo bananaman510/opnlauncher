@@ -1,13 +1,13 @@
 # Public development preview checklist
 
-Target source version: `0.1.0-dev.16` (pre-release; not stable).
+Target source version: `0.1.0-dev.17` (pre-release; not stable).
 
 This checklist prepares a public source snapshot. It does not authorize creating a GitHub repository, adding a GitHub remote, uploading a public snapshot, creating a tag, or publishing a release.
 
 ## Prepared in this branch
 
 - [x] Preserve the private Forgejo remote as the primary development source; no automatic GitHub mirror is configured.
-- [x] Keep version metadata at `0.1.0-dev.16` and label the preview as unstable.
+- [x] Keep version metadata at `0.1.0-dev.17` and label the preview as unstable.
 - [x] Document Linux setup, local developer accounts, Java instances, mods, Horizon, privacy, storage, and known limitations.
 - [x] Add draft preview notes, contributor guidance, and third-party notices.
 - [x] Add CI, dependency security checks, and a manually started AppImage artifact workflow. None creates a tag or GitHub release.
@@ -23,6 +23,6 @@ This checklist prepares a public source snapshot. It does not authorize creating
 - [ ] Re-run the full secret scan and review the exact commit and complete Git history immediately before upload.
 - [ ] Create the GitHub repository and add a separate `github` remote only after explicit approval. Keep Forgejo as `origin` and the primary development remote.
 - [ ] Enable and verify GitHub private vulnerability reporting before inviting security reports.
-- [ ] Obtain explicit approval for pushing the exact reviewed commit, creating `v0.1.0-dev.16`, and publishing the GitHub pre-release. Do not rewrite history.
+- [ ] Obtain explicit approval for pushing the exact reviewed commit, creating `v0.1.0-dev.17`, and publishing the GitHub pre-release. Do not rewrite history.
 
 The maintainers have reported successful local AppImage and Horizon launches. The current preparation work does not independently reproduce a complete Minecraft session or establish cross-platform compatibility.
